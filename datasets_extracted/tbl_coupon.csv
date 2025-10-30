@@ -1,0 +1,5 @@
+﻿coupon_id,coupon_name,coupon_name_code,coupon_desc,coupon_qty_code,coupon_condition,coupon_price_sale,coupon_start_date,coupon_end_date,created_at,updated_at
+5,Chào Đà Nẵng,CHAODANANG,Voucher ưu đãi khu vực Đà Nẵng,9991,1,9,2022-11-09,2026-12-31,2022-11-16 07:01:41,2022-11-16 07:01:41
+6,Hello VKU,HELLOVKU,Voucher ưu đãi cho sinh viên VKU,994,1,19,2022-11-02,2026-12-31,2022-11-16 07:02:25,2022-11-16 07:02:25
+7,Sếp Nguyên Mãi Đỉnh,SEPNGUYEN,Sếp Nguyên Báo Thủ Cân Team,996,1,14,2022-10-12,2026-12-31,2022-11-16 07:03:25,2022-11-16 07:03:25
+8,Mã Hết Hạn,HETHAN,Mã Hết Hạn,1000,1,99,2022-09-10,2026-12-31,2022-11-16 07:04:12,2022-11-16 07:04:12

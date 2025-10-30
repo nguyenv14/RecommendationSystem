@@ -1,0 +1,15 @@
+﻿facilitiesroom_id,facilitiesroom_name,facilitiesroom_image,facilitiesroom_status,facilitiesroom_desc,created_at,updated_at,deleted_at
+2,Vòi Sen,voisen69.svg,1,Vòi Sen,2022-11-14 12:59:14,NULL,NULL
+3,Truyền Hình,truyenhinh7.png,1,Truyền Hình,2022-11-14 12:59:40,NULL,NULL
+4,Trà Cafe,tracafe68.svg,1,Trà Cafe,2022-11-14 13:00:05,NULL,NULL
+5,Tivi,tivi72.svg,1,Tivi,2022-11-14 13:00:25,NULL,NULL
+6,Nước,nuoc47.svg,1,Nước,2022-11-14 13:01:16,NULL,NULL
+7,Máy Sấy,maysay22.svg,1,Máy Sấy,2022-11-14 13:01:35,NULL,NULL
+8,Ghế Sofa,ghesofa73.svg,1,Ghế Sofa,2022-11-14 13:01:51,NULL,NULL
+9,Đồ Vệ Sinh,dovesinh27.svg,1,Đồ Vệ Sinh,2022-11-14 13:02:10,NULL,NULL
+10,Dọn Phòng,donphong12.png,1,Dọn Phòng,2022-11-14 13:02:30,NULL,NULL
+11,Cửa Sổ,cuaso85.svg,1,Cửa Sổ,2022-11-14 13:02:49,NULL,NULL
+12,Bình Nước,binhnuoc86.svg,1,Bình Nước,2022-11-14 13:03:10,NULL,NULL
+13,Bàn Trang Điểm,bantrangdiem86.svg,1,Bàn Trang Điểm,2022-11-14 13:03:29,NULL,NULL
+14,Wi-fi 5.0,wifi71.png,1,Wi-fi 5,2022-11-14 13:29:02,NULL,NULL
+15,Bồn Rữa Mặt Thấp,bon-rua-mat-thap-hon3.png,1,Bồn Rữa Mặt Thấp,2022-11-14 14:22:31,2022-11-14 14:22:44,2022-11-14 07:22:44

@@ -1,0 +1,5 @@
+﻿servicecharge_id,hotel_id,servicecharge_condition,servicecharge_fee,created_at,updated_at,deleted_at
+5,2,1,10,2022-11-17 13:40:02,2022-11-23 15:52:55,NULL
+6,4,1,11,2022-11-17 13:40:10,NULL,NULL
+7,5,1,12,2022-11-17 13:49:49,NULL,NULL
+8,3,2,100000,2022-11-20 10:05:56,2022-11-23 15:52:53,NULL

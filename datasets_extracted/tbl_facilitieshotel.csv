@@ -1,0 +1,17 @@
+﻿facilitieshotel_id,facilitieshotel_name,facilitieshotel_image,facilitieshotel_group,facilitieshotel_status,facilitieshotel_desc,created_at,updated_at,deleted_at
+2,Bãi Đậu Ô tô,car_for_hire47.png,2,1,Bãi Đậu Ô tô,2022-11-14 13:51:41,2022-11-14 14:36:30,NULL
+3,Phòng Gym,gym83.png,3,1,Phòng Gym,2022-11-14 14:19:05,NULL,NULL
+4,Lễ Tân 24h,reception-hotel-24h65.svg,4,1,Lễ Tân 24h,2022-11-14 14:19:34,NULL,NULL
+5,Internet Miễn Phí,Amenities_wifi29.png,5,1,Internet Miễn Phí,2022-11-14 14:20:07,NULL,NULL
+6,Spa,spa-stone 128.png,6,1,Spa,2022-11-14 14:20:33,NULL,NULL
+7,Dọn Dẹp Hàng Ngày,don-dep-hang-ngay7.png,7,1,Dọn Dẹp Hàng Ngày,2022-11-14 14:21:18,NULL,NULL
+8,Lối Vào Người Khuyết Tật,loi-vao-xe-lan31.png,8,1,Lối Vào Người Khuyết Tật,2022-11-14 14:21:57,NULL,NULL
+9,Bồn Rữa Mặt Thấp,bon-rua-mat-thap-hon39.png,8,1,Bồn Rữa Mặt Thấp,2022-11-14 14:23:24,NULL,NULL
+10,Nhà Hàng,nha-hang95.png,9,1,Nhà Hàng,2022-11-14 14:23:59,NULL,NULL
+11,Phòng Họp,phong-hop9.png,10,1,Phòng Họp,2022-11-14 14:24:56,NULL,NULL
+12,Tổ Chức Sự Kiện,phong-hop90.png,10,1,Tổ Chức Sự Kiện,2022-11-14 14:25:30,NULL,NULL
+13,American Express,payment_jcb29.png,1,1,American Express,2022-11-14 14:26:21,NULL,NULL
+14,Máy Fax,printer 162.png,10,1,Máy Fax,2022-11-14 14:27:26,NULL,NULL
+15,Hồ bơi,swimming-pool-person 162.png,12,1,Hồ bơi,2022-11-14 14:28:26,NULL,NULL
+16,Sân Thượng,san-thuong11.png,11,1,Sân Thượng,2022-11-14 14:28:57,NULL,NULL
+17,Ban Công,balcony12.png,11,1,Ban Công,2022-11-14 14:29:42,NULL,NULL

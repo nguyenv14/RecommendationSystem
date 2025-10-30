@@ -1,0 +1,54 @@
+﻿menu_item_id,restaurant_id,menu_item_name,menu_item_image,menu_item_description,menu_item_price,menu_item_status,created_at,updated_at
+4,1,Thịt luộc mắm tôm,bepviet2071-copy-802834.jpg,Là sự hòa quyện của thịt luộc với mắm tôm,119000,1,2024-10-15 16:53:51,2024-10-15 16:53:51
+5,1,Rau đảo phú quý,rau-tron-24114.jpg,Rau trộn được nhập từ đảo Phú Quý,109000,1,2024-10-15 16:54:34,2024-10-15 16:54:34
+6,1,Cá kho tiêu,4318877543925966803532242640667737108045506n-565084.jpg,Cá chốt kho tiêu rất thơm,160000,1,2024-10-15 16:55:05,2024-10-15 16:55:05
+7,1,Canh cua rau đay,bepviet2297-copy-72285.jpg,Canh cua được nấu với rau đay,130000,1,2024-10-15 16:55:38,2024-10-15 16:55:38
+8,1,Canh chua cá bớp,bepviet1816-copy-614541.jpg,Canh chua được nấu với cá bớp thơm ngon,230000,1,2024-10-15 16:56:25,2024-10-15 16:56:25
+9,1,Canh khổ qua,canh-kho-qua-524348.jpg,Canh khổ qua được nấu cùng thác lác,110000,1,2024-10-15 16:57:09,2024-10-15 16:57:09
+10,1,Cà tím sốt thịt,bepviet2305-copy-536958.jpg,Cà tím được nấu cùng sốt thịt bằm,130000,1,2024-10-15 16:58:02,2024-10-15 16:58:02
+11,1,Cá bớp kho tiêu,bepviet1959-copy-186251.jpg,Cá bớp kho thơm cùng tiêu,130000,1,2024-10-15 17:01:58,2024-10-15 17:01:58
+12,4,Gỏi cuốn,Screenshot_16-10-2024_0336_danang25.jpeg,Gỏi chấm hòa quyện với nước mắm,60000,1,2024-10-15 17:35:31,2024-10-15 17:35:31
+13,4,Cơm chiên,Screenshot_16-10-2024_0342_danang3.jpeg,Gỏi chấm hòa quyện với nước mắm,90000,1,2024-10-15 17:37:37,2024-10-15 17:37:37
+14,4,Chả giò,Screenshot_16-10-2024_03136_danang8.jpeg,Chả giò giống với gỏi cuốn,85000,1,2024-10-15 17:38:19,2024-10-15 17:38:19
+15,4,Chả lụi,Screenshot_16-10-2024_03250_danang69.jpeg,Giống với chả giò,130000,1,2024-10-15 17:38:48,2024-10-15 17:38:48
+16,4,Bún thịt xào,Screenshot_16-10-2024_03320_danang15.jpeg,Là sự hòa quyện giữa nhiều hương vị,60000,1,2024-10-15 17:39:31,2024-10-15 17:39:31
+17,4,Bún Chả giò,Screenshot_16-10-2024_03334_danang70.jpeg,Là sự kết hợp hoàn hảo giữa bún và chả giò,70000,1,2024-10-15 17:40:12,2024-10-15 17:40:12
+18,4,Bún bò Huế,Screenshot_16-10-2024_03350_danang36.jpeg,Là một đặc sản xứ Huế,75000,1,2024-10-15 17:40:45,2024-10-15 17:40:45
+19,5,Điệp Pháp,Screenshot_16-10-2024_05054_www44.jpeg,Điệp được nhập từ Pháp,200000,1,2024-10-15 17:57:28,2024-10-15 17:57:28
+20,5,Beefsteak Cheese,Screenshot_16-10-2024_05117_www12.jpeg,Nhập từ bò thượng hạng,700000,1,2024-10-15 17:58:22,2024-10-15 17:58:22
+21,5,Mực nhồi thịt,Screenshot_16-10-2024_05140_www21.jpeg,Mực được hầm cùng với thịt,570000,1,2024-10-15 17:59:50,2024-10-15 17:59:50
+22,5,Mực sốt cà,Screenshot_16-10-2024_0523_www49.jpeg,Hòa quyện với hương vị cà chua,590000,1,2024-10-15 18:00:34,2024-10-15 18:00:34
+23,5,Buttcher Steak,Screenshot_16-10-2024_05316_www10.jpeg,Được cắt từng lát ăn cùng với khoai tây,760000,1,2024-10-15 18:01:58,2024-10-15 18:01:58
+24,5,Gan Ngỗng,Screenshot_16-10-2024_05421_www54.jpeg,Được chọn từ các con ngỗng Pháp,470000,1,2024-10-15 18:02:42,2024-10-15 18:02:42
+25,5,Tôm hùm,Screenshot_16-10-2024_1333_cabanonpalace64.jpeg,Tôm hùm tươi,2500000,1,2024-10-15 18:04:39,2024-10-15 18:04:39
+26,6,Chả hải sản,Screenshot_16-10-2024_205615_docs40.jpeg,Chả hải sản được bọc lá chuối nướng,119000,1,2024-10-16 13:57:58,2024-10-16 13:57:58
+27,6,Thịt xá xíu,Screenshot_16-10-2024_205816_docs46.jpeg,Thịt xá xíu được nấu theo kiểu Thái,105000,1,2024-10-16 13:59:10,2024-10-16 13:59:10
+28,6,Ram chả kiểu thái,Screenshot_16-10-2024_205928_docs56.jpeg,Là 1 set món chiên kiểu Thái,119000,1,2024-10-16 14:00:13,2024-10-16 14:00:13
+29,6,Trứng chả bắc thảo,Screenshot_16-10-2024_21034_docs30.jpeg,Trứng bắc thảo được nấu cùng với chả,85000,1,2024-10-16 14:01:12,2024-10-16 14:01:12
+30,6,Trứng chiên xốt thái,Screenshot_16-10-2024_21139_docs42.jpeg,Trứng chiên xốt thái quế,39000,1,2024-10-16 14:02:25,2024-10-16 14:02:25
+31,6,Xúc xích tươi,Screenshot_16-10-2024_21252_docs43.jpeg,Xúc xích tươi Chăng Mai,99000,1,2024-10-16 14:03:50,2024-10-16 14:03:50
+32,6,Gà nướng,Screenshot_16-10-2024_21410_docs30.jpeg,Gà nướng bó xôi,259000,1,2024-10-16 14:04:46,2024-10-16 14:04:46
+33,6,Heo nướng mọi,Screenshot_16-10-2024_21510_docs20.jpeg,Heo nướng mọi ăn cùng với xôi,189000,1,2024-10-16 14:05:54,2024-10-16 14:05:54
+34,7,Tokyo BBQ,Screenshot_16-10-2024_211840_docs23.jpeg,"Sườn bò, lưỡi bò, vai bò",609000,1,2024-10-16 14:19:29,2024-10-16 14:19:29
+35,7,Matsu BBQ,Screenshot_16-10-2024_211950_docs47.jpeg,"Món nướng với thịu cừu, ba rọi",299000,1,2024-10-16 14:20:42,2024-10-16 14:20:42
+36,7,Hàu đút lò,Screenshot_16-10-2024_212115_docs91.jpeg,Hàu sữa ngũ vị đút lò,209000,1,2024-10-16 14:21:53,2024-10-16 14:21:53
+37,7,Sò điệp nướng,Screenshot_16-10-2024_21229_docs71.jpeg,Sò điệp nướng mỡ hành,159000,1,2024-10-16 14:22:43,2024-10-16 14:22:43
+38,7,Combo hun khói,Screenshot_16-10-2024_21235_docs27.jpeg,"Sườn hun khói, xúc xích vua, khoai tây chiên",419000,1,2024-10-16 14:24:03,2024-10-16 14:24:03
+39,7,Combo nướng lu,Screenshot_16-10-2024_212425_docs98.jpeg,"Sườn hun khói, xúc xích vua, khoai tây chiên",369000,1,2024-10-16 14:25:05,2024-10-16 14:25:05
+40,8,Cơm cháy Madam Lân,Screenshot_16-10-2024_214019_madamelan38.jpeg,Cơm cháy do Madam Lân sáng tạo,69000,1,2024-10-16 14:41:14,2024-10-16 14:41:14
+41,8,Bắp Hoa ôm dầu,Screenshot_16-10-2024_214129_madamelan14.jpeg,Bắp hoa ôm xì dầu,280000,1,2024-10-16 14:42:05,2024-10-16 14:42:05
+42,8,Canh chua chả cá,Screenshot_16-10-2024_214221_madamelan30.jpeg,Canh chua được nấu cùng chả cá,235000,1,2024-10-16 14:43:01,2024-10-16 14:43:01
+43,8,Nem rán,Screenshot_16-10-2024_214340_madamelan66.jpeg,Nem rán Madam Lân,235000,1,2024-10-16 14:44:14,2024-10-16 14:44:14
+44,8,Bánh mì bò kho,Screenshot_16-10-2024_214427_madamelan34.jpeg,Một món ăn quen thuộc của Việt Nam,82000,1,2024-10-16 14:45:07,2024-10-16 14:45:07
+45,8,Sò điệp nướng,Screenshot_16-10-2024_214523_madamelan17.jpeg,Sò điệp nướng bơ,449000,1,2024-10-16 14:45:58,2024-10-16 14:45:58
+46,8,Cá mú nướng,Screenshot_16-10-2024_214619_madamelan18.jpeg,Cá mú nướng song vị,310000,1,2024-10-16 14:46:49,2024-10-16 14:46:49
+47,8,Tôm hùm Baby,Screenshot_16-10-2024_21474_madamelan4.jpeg,Tôm hùm bayby sốt gạch đỏ,278000,1,2024-10-16 14:47:51,2024-10-16 14:47:51
+48,9,Mỳ Quảng tôm thịt,Screenshot_16-10-2024_215733_docs70.jpeg,Mỳ Quảng tôm thịt theo kiểu Nghệ,65000,1,2024-10-16 14:58:27,2024-10-16 14:58:27
+49,9,Gà hấp mắm nhĩ,Screenshot_16-10-2024_215941_docs36.jpeg,Gà hấp với mắm nhĩ,430000,1,2024-10-16 15:00:25,2024-10-16 15:00:25
+50,9,Chả giò làng Nghệ,Screenshot_16-10-2024_22041_docs74.jpeg,Chả giò của Nghệ,175000,1,2024-10-16 15:01:27,2024-10-16 15:01:27
+51,9,Salad rong nho,Screenshot_16-10-2024_22353_docs4.jpeg,Salad rong nho cá ngừ,135000,1,2024-10-16 15:04:40,2024-10-16 15:04:40
+52,9,Cải thìa sốt mắm,Screenshot_16-10-2024_22458_docs4.jpeg,Cải thìa cùng với nấm,105000,1,2024-10-16 15:05:35,2024-10-16 15:05:35
+53,9,Mẹt gà 5 món,Screenshot_16-10-2024_2263_docs2.jpeg,Mẹt gà cùng 5 món ăn đã cái nư,460000,1,2024-10-16 15:07:17,2024-10-16 15:07:17
+54,9,Cơm chiên hải sản,Screenshot_16-10-2024_22731_docs99.jpeg,"Cơm chiên hải sản gồm tôm, cua,...",105000,1,2024-10-16 15:08:05,2024-10-16 15:08:05
+55,9,Súp nấm tuyết hoa,Screenshot_16-10-2024_22824_docs17.jpeg,Món ăn chay cho người tu dưỡng,59000,1,2024-10-16 15:09:14,2024-10-16 15:09:14
+56,9,Cơm hấp hạt sen,Screenshot_16-10-2024_22950_docs28.jpeg,Cơm xào được hấp cùng với hạt sen thơm ngon,89000,1,2024-10-16 15:10:49,2024-10-16 15:10:49

@@ -1,0 +1,24 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Increase timeout for pip install
+ENV PIP_DEFAULT_TIMEOUT=200
+ENV PIP_TIMEOUT=200
+
+# Install dependencies with retry and timeout
+COPY requirements_api.txt .
+COPY requirements_semantic.txt .
+RUN pip install --no-cache-dir --timeout=200 --retries=5 -r requirements_api.txt && \
+    pip install --no-cache-dir --timeout=200 --retries=5 -r requirements_semantic.txt
+
+# Copy application code
+COPY *.py ./
+COPY datasets_extracted/ ./datasets_extracted/
+
+# Expose port
+EXPOSE 5000
+
+# Run the application
+CMD ["python", "api_service.py"]
+
