@@ -1,4 +1,38 @@
+# Environment files
 .env
 .venv
-./venv
-./tf_env
+
+# Virtual environments
+venv/
+tf_env/
+**/venv/
+**/tf_env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Large data files
+*.snappy
+*.parquet
+interactions_parquet.snappy
+
+# Model files (too large for git)
+*.h5
+*.pb
+*.index
+*.data-00000-of-00001
+*.npy
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
