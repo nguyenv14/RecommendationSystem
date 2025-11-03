@@ -1,0 +1,66 @@
+﻿room_id,hotel_id,room_name,room_amount_of_people,room_acreage,room_view,room_status,created_at,updated_at,deleted_at
+2,3,Phòng Grand Suite,2,45,Hướng Sông,1,2022-11-06 16:58:38,2022-11-11 16:19:02,NULL
+3,3,Phòng Deluxe King,2,45,Hướng Thành Phố Và Sông,1,2022-11-06 17:37:43,2022-11-11 16:19:05,NULL
+4,3,Phòng Deluxe King,2,45,Hướng Thành Phố Và Sông,1,2022-11-06 17:38:54,2025-10-26 05:41:56,NULL
+5,3,Phòng Premier Deluxe Twin,2,45,Hướng Sông,1,2022-11-06 17:39:28,NULL,NULL
+6,2,Deluxe Room,2,41,Hướng Thành Phố,1,2022-11-12 13:36:50,NULL,NULL
+7,2,Deluxe Room Horizon View,2,42,Hướng Thành Phố,1,2022-11-12 13:37:26,NULL,NULL
+8,2,Grand Premium Room,2,42,Hướng Sông,1,2022-11-12 13:37:45,NULL,NULL
+9,4,Phòng Deluxe King,1,45,Hướng Sông,1,2022-11-12 13:44:38,NULL,NULL
+10,4,Phòng Premier Deluxe Twin,2,42,Hướng Sông,1,2022-11-12 13:44:48,NULL,NULL
+11,4,Deluxe Room,3,45,Hướng Thành Phố,1,2022-11-12 13:44:57,NULL,NULL
+12,5,Phòng Deluxe King,1,45,Hướng Sông,1,2022-11-12 13:48:49,NULL,NULL
+13,5,Phòng Premier Deluxe Twin,2,42,Hướng Sông,1,2022-11-12 13:48:57,NULL,NULL
+14,5,Phòng Deluxe Twin,3,45,Hướng Thành Phố,1,2022-11-12 13:49:07,NULL,NULL
+15,6,Superior City View Twin,2,32,Hướng Thành Phố,1,2022-12-23 08:29:54,NULL,NULL
+16,6,Superior City View Queen Bed,2,45,Hướng Thành Phố Và Sông,1,2022-12-23 08:31:27,NULL,NULL
+17,6,Superior Ocean View Twin,2,42,Hướng Thành Phố,1,2022-12-23 08:31:50,NULL,NULL
+18,7,Deluxe Twin Room,2,28,Hướng Sông,1,2022-12-23 08:44:29,NULL,NULL
+19,7,Deluxe Double City View,2,28,Hướng Thành Phố,1,2022-12-23 08:44:57,NULL,NULL
+20,7,Premium Ocean View,2,30,Hướng Thành Phố Và Sông,1,2022-12-23 08:45:19,NULL,NULL
+21,8,Superior Twin,2,30,Hướng Sông,1,2022-12-23 09:04:27,NULL,NULL
+22,8,Deluxe Twin,2,28,Hướng Sông,1,2022-12-23 09:04:42,NULL,NULL
+23,8,Suite Double,2,30,Hướng Thành Phố Và Sông,1,2022-12-23 09:04:56,NULL,NULL
+24,9,Deluxe Double Panoramic Ocean View,2,70,Hướng Sông,1,2022-12-23 09:25:34,NULL,NULL
+25,9,Deluxe Twin Panoramic Ocean View,2,70,Hướng Sông,1,2022-12-23 09:25:52,NULL,NULL
+26,9,Premium Deluxe Double Panoramic Ocean View,2,70,Hướng Thành Phố Và Sông,1,2022-12-23 09:26:03,NULL,NULL
+27,10,"Deluxe Ocean Twin, Ban Công, Hướng Biển",2,42,Hướng Sông,1,2022-12-23 18:24:45,NULL,NULL
+28,10,"Deluxe Ocean Double, Ban Công, Hướng Biển",2,42,Hướng Thành Phố,1,2022-12-23 18:25:01,NULL,NULL
+29,10,"Premier Oceanfront Twin, Trực Diện Biển, Tầng cao, Ban Công",2,45,Hướng Thành Phố Và Sông,1,2022-12-23 18:25:21,2024-11-12 16:56:59,NULL
+30,11,Superior Twin,2,26,Hướng Sông,1,2022-12-23 18:35:26,NULL,NULL
+31,11,Superior King,2,42,Hướng Sông,1,2022-12-23 18:35:41,NULL,NULL
+32,11,Deluxe King,2,28,Hướng Thành Phố Và Sông,1,2022-12-23 18:35:55,NULL,NULL
+33,12,Superior I Double/Twin,2,30,Hướng Sông,1,2022-12-23 18:44:23,NULL,NULL
+34,12,Superior II Double/Twin,2,32,Hướng Sông,1,2022-12-23 18:44:44,NULL,NULL
+35,12,SENIOR DOUBLE,2,30,Hướng Thành Phố,1,2022-12-23 18:45:33,NULL,NULL
+36,13,Superior Double Or Twin Room,2,45,Hướng Sông,1,2022-12-23 18:55:07,NULL,NULL
+37,13,Deluxe Double Or Twin Balcony Room,2,42,Hướng Thành Phố,1,2022-12-23 18:55:21,NULL,NULL
+38,13,Deluxe Triple Balcony Room,2,42,Hướng Thành Phố Và Sông,1,2022-12-23 18:55:34,NULL,NULL
+39,14,Superior Double city View,2,30,Hướng Sông,1,2022-12-23 19:05:00,NULL,NULL
+40,14,Superior Twin,2,28,Hướng Thành Phố,1,2022-12-23 19:05:15,NULL,NULL
+41,14,Deluxe Double,2,42,Hướng Thành Phố,1,2022-12-23 19:05:29,NULL,NULL
+42,15,Superior King Ocean View,2,42,Hướng Sông,1,2022-12-24 02:33:50,NULL,NULL
+43,15,Superior Twin Bay View,2,28,Hướng Sông,1,2022-12-24 02:34:03,NULL,NULL
+44,15,Deluxe King/Twin Ocean View,2,42,Hướng Thành Phố Và Sông,1,2022-12-24 02:34:15,NULL,NULL
+45,16,Deluxe Twin,2,28,Hướng Sông,1,2022-12-24 02:43:31,NULL,NULL
+46,16,Deluxe Partial Ocean Twin,2,30,Hướng Thành Phố Và Sông,1,2022-12-24 02:43:44,NULL,NULL
+47,16,Deluxe Partial Ocean King,2,30,Hướng Thành Phố,1,2022-12-24 02:43:56,NULL,NULL
+48,17,Superior Twin/King (Khách Việt Nam),2,37,Hướng Thành Phố,1,2022-12-24 02:52:19,NULL,NULL
+49,17,Deluxe Twin/King (Khách Việt Nam),2,30,Hướng Thành Phố,1,2022-12-24 02:52:33,NULL,NULL
+50,17,Deluxe Golden Bay King/Twin (Khách Việt Nam),2,28,Hướng Thành Phố Và Sông,1,2022-12-24 02:52:47,NULL,NULL
+51,18,Deluxe City View,2,28,Hướng Thành Phố,1,2022-12-24 03:00:53,NULL,NULL
+52,18,Deluxe Partial Ocean View,2,30,Hướng Thành Phố Và Sông,1,2022-12-24 03:01:07,NULL,NULL
+53,18,Junior Suite Ocean View,2,28,Hướng Thành Phố,1,2022-12-24 03:01:19,NULL,NULL
+54,19,Superior King Room,2,45,Hướng Sông,1,2022-12-24 03:10:02,NULL,NULL
+55,19,Deluxe King Room,2,45,Hướng Sông,1,2022-12-24 03:10:16,NULL,NULL
+56,19,Deluxe King Room with Street View,2,45,Hướng Thành Phố,1,2022-12-24 03:10:35,NULL,NULL
+57,20,Classic Double,2,45,Hướng Sông,1,2022-12-24 03:19:38,NULL,NULL
+58,20,Deluxe Twin city view,2,42,Hướng Thành Phố Và Sông,1,2022-12-24 03:19:52,NULL,NULL
+59,20,Premium Sea Side Twin,2,28,Hướng Thành Phố,1,2022-12-24 03:20:05,NULL,NULL
+60,21,Superior King Room,2,28,Hướng Sông,1,2022-12-24 03:27:34,NULL,NULL
+61,21,Deluxe King Có Ban Công View Hồ Bơi/Thành Phố,2,45,Hướng Thành Phố,1,2022-12-24 03:27:53,NULL,NULL
+62,21,Superior Twin Room,2,42,Hướng Thành Phố,1,2022-12-24 03:28:06,NULL,NULL
+64,22,Family Room,1,42,Hướng Sông,1,2025-10-26 02:46:01,2025-10-26 02:46:19,NULL
+65,23,Deluxe Double or Twin Room with City View,2,26,Hướng Thành Phố,1,2025-10-26 03:22:16,NULL,NULL
+66,23,Triple Room,3,32,Hướng Thành Phố,1,2025-10-26 03:23:03,NULL,NULL
+67,23,Suite with Spa Bath,1,56,Hướng Thành Phố,1,2025-10-26 03:23:43,NULL,NULL

@@ -1,0 +1,8 @@
+﻿area_id,area_name,area_desc,area_image,area_status,created_at,updated_at,deleted_at
+3,Cẩm Lệ,Cẩm Lệ,camle47.png,1,2022-10-29 18:45:14,NULL,NULL
+4,Hải Châu,Hải Châu,haichau40.png,1,2022-10-29 18:45:44,NULL,NULL
+5,Hòa Vang,Hòa Vang,hoavang63.png,1,2022-10-29 18:46:01,NULL,NULL
+6,Liên Chiểu,Liên Chiểu,lienchieu66.png,1,2022-10-29 18:46:19,NULL,NULL
+7,Ngũ Hành Sơn,Ngũ Hành Sơn,Nguhanhson90.png,1,2022-10-29 18:46:35,NULL,NULL
+8,Sơn Trà,Sơn Trà,sontra1.png,1,2022-10-29 18:46:48,NULL,NULL
+9,Thanh Khê,Thanh Khê,thanhke42.png,1,2022-10-29 18:47:04,NULL,NULL

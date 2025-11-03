@@ -1,0 +1,6 @@
+﻿admin_id,admin_email,admin_password,admin_name,admin_phone,hotel_id,created_at,updated_at
+1,admin@gmail.com,e10adc3949ba59abbe56e057f20f883e,Quản Trị Viên,0987654321,NULL,2022-10-23 06:50:51,2022-10-23 06:50:51
+2,nhanmanager@gmail.com,e10adc3949ba59abbe56e057f20f883e,Nhân Quản Lý,0987654321,NULL,2022-10-23 07:47:33,2022-10-23 07:47:33
+3,nhanemployee@gmail.com,e10adc3949ba59abbe56e057f20f883e,Nhân Nhân Viên,0987654321,NULL,2022-10-23 07:47:56,2022-10-23 07:47:56
+5,nguyen@haiau.com,e10adc3949ba59abbe56e057f20f883e,Nguyễn Văn Vĩnh Nguyên,0839519415,22,2025-10-06 14:34:34,2025-10-06 14:34:34
+6,nguyen@fitness.com,e10adc3949ba59abbe56e057f20f883e,Nguyennvv,0839519415,23,2025-10-26 03:19:45,2025-10-26 03:19:45

@@ -1,0 +1,3 @@
+﻿table_id,restaurant_id,table_price,table_name,table_condition,table_quantity,table_status,created_at,updated_at
+1,1,100000,Bàn 1,NULL,10,1,2024-10-12 18:43:45,2024-10-12 18:43:45
+5,1,50000,Bàn cao cấp,NULL,10,1,2024-10-15 16:52:52,2024-10-15 16:52:52

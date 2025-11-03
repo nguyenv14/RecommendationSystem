@@ -1,0 +1,9 @@
+﻿brand_id,brand_name,brand_desc,brand_status,created_at,updated_at,deleted_at
+1,Mường Thanh Hotel,Mường Thanh Hotel Group Ok,1,2022-10-29 14:34:43,2022-10-31 16:18:33,NULL
+2,Accor,Accor,1,2022-10-30 17:39:55,NULL,NULL
+3,Furama,Furama,1,2022-10-30 17:40:06,NULL,NULL
+4,InterContinental Hotels Group,InterContinental Hotels Group,1,2022-10-30 17:40:15,NULL,NULL
+5,Meliá Hotels International,Meliá Hotels International,1,2022-10-30 17:40:23,NULL,NULL
+6,Pullman,Pullman,1,2022-10-30 17:40:36,2022-10-30 17:41:18,NULL
+7,Sheraton,Sheraton,1,2022-10-30 17:40:43,NULL,NULL
+8,Vinpearl,Vinpearl,1,2022-10-30 17:40:50,2022-10-30 17:41:16,NULL
