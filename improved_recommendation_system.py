@@ -42,12 +42,12 @@ class ImprovedHotelRecommendationSystem:
     def load_model(self):
         """Load model đã cải thiện"""
         model_path = self.model_dir / "saved_model"
-        self.model = tf.keras.models.load_model(str(model_path))
+        self.model = tf.keras.layers.TFSMLayer(str(model_path), call_endpoint='serving_default')
         print(f"✅ Loaded improved model from {model_path}")
     
     def load_hotel_info(self):
         """Load thông tin khách sạn"""
-        hotels_df = pd.read_csv("../dataset_hotels.csv", on_bad_lines='skip')
+        hotels_df = pd.read_csv("dataset_hotels.csv", on_bad_lines='skip')
         self.hotel_info = hotels_df.set_index('hotel_id').to_dict('index')
         print(f"✅ Loaded info for {len(self.hotel_info)} hotels")
     
@@ -151,7 +151,7 @@ def main():
     print("🚀 Khởi tạo hệ thống gợi ý cải thiện...")
     
     # Sử dụng model clean
-    model_dir = Path("models/clean_ncf")
+    model_dir = Path("processed/models/clean_ncf")
     if not model_dir.exists():
         print(f"❌ Không tìm thấy model clean: {model_dir}")
         return
