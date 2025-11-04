@@ -1,0 +1,38 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DEFAULT_TIMEOUT=200
+ENV PIP_TIMEOUT=200
+
+# Copy requirements
+COPY requirements_rag.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --timeout=200 --retries=5 -r requirements_rag.txt
+
+# Copy application code
+COPY . .
+
+# Create directories
+RUN mkdir -p /app/datasets_extracted
+RUN mkdir -p /app/rag/normalized_data
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# Run the application
+CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]
+

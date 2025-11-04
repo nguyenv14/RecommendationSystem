@@ -1,15 +1,15 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-
+# POPULARITY-WEIGHTED RECOMMENDATION SYSTEM (IMDb/Bayesian Average Method)
 # Bước 1: Đọc và chuẩn bị dữ liệu
 def load_and_prepare_data():
     # Đọc các file CSV (xử lý lỗi định dạng)
     try:
-        df_eval = pd.read_csv('dataset_evaluates.csv', on_bad_lines='skip')
-        df_orders = pd.read_csv('dataset_orders.csv', on_bad_lines='skip') 
-        df_rooms = pd.read_csv('dataset_rooms.csv', on_bad_lines='skip')
-        df_hotels = pd.read_csv('dataset_hotels.csv', on_bad_lines='skip')
-        df_order_details = pd.read_csv('dataset_order_details.csv', on_bad_lines='skip')
+        df_eval = pd.read_csv('datasets_extracted/tbl_evaluate.csv', on_bad_lines='skip')
+        df_orders = pd.read_csv('datasets_extracted/tbl_order.csv', on_bad_lines='skip') 
+        df_rooms = pd.read_csv('datasets_extracted/tbl_room.csv', on_bad_lines='skip')
+        df_hotels = pd.read_csv('datasets_extracted/tbl_hotel.csv', on_bad_lines='skip')
+        df_order_details = pd.read_csv('datasets_extracted/tbl_order_details.csv', on_bad_lines='skip')
         
     except Exception as e:
         print(f"Lỗi đọc file: {e}")
@@ -159,7 +159,7 @@ def plot_comparison(result, top_n=10):
 
 # Hàm chính
 def main():
-    print("🚀 BẮT ĐẦU DEMOGRAPHIC FILTERING CHO HỆ THỐNG ĐỀ XUẤT KHÁCH SẠN")
+    print("🚀 BẮT ĐẦU POPULARITY-BASED RECOMMENDATION SYSTEM (IMDb Method)")
     print("=" * 60)
     
     # 1. Đọc dữ liệu

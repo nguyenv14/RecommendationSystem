@@ -1,0 +1,33 @@
+# Core dependencies
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
+
+# Data processing
+pandas==2.1.4
+numpy==1.26.2
+
+# LangChain and RAG
+langchain==0.1.0
+langchain-community==0.0.13
+langchain-core==0.1.10
+
+# Vector database
+qdrant-client==1.7.0
+
+# Embeddings (Ollama)
+# Note: Ollama is running separately, these are for local embeddings if needed
+sentence-transformers==2.2.2
+transformers==4.36.2
+
+# Optional: Redis for caching
+redis==5.0.1
+
+# Utilities
+requests==2.31.0
+python-json-logger==2.0.7
+pydantic==2.5.3
+
+# Logging
+colorlog==6.8.0
+
