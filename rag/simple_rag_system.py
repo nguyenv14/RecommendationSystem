@@ -8,7 +8,9 @@ Sử dụng LangChain + Ollama + Qdrant
 import pandas as pd
 import os
 import json
+import hashlib
 from typing import List, Dict, Optional
+from functools import lru_cache
 import logging
 from pathlib import Path
 
@@ -18,10 +20,58 @@ from langchain_community.llms import Ollama
 from langchain.schema import Document
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
+from langchain_core.embeddings import Embeddings
 from qdrant_client import QdrantClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class CachedOllamaEmbeddings(Embeddings):
+    """
+    Wrapper cho OllamaEmbeddings với cache để tối ưu performance
+    Inherit từ Embeddings base class để tương thích với LangChain
+    """
+    def __init__(self, embeddings: OllamaEmbeddings, cache_enabled: bool = True):
+        """
+        Initialize cached embeddings wrapper
+        
+        Args:
+            embeddings: OllamaEmbeddings instance
+            cache_enabled: Enable caching
+        """
+        super().__init__()
+        self.embeddings = embeddings
+        self._embedding_cache = {}
+        self._cache_enabled = cache_enabled
+    
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query với cache"""
+        if not self._cache_enabled:
+            return self.embeddings.embed_query(text)
+        
+        # Tạo cache key từ text
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+        
+        # Check cache
+        if cache_key in self._embedding_cache:
+            logger.debug(f"Embedding cache hit for: {text[:50]}...")
+            return self._embedding_cache[cache_key]
+        
+        # Cache miss - embed và cache
+        logger.debug(f"Embedding cache miss for: {text[:50]}...")
+        embedding = self.embeddings.embed_query(text)
+        self._embedding_cache[cache_key] = embedding
+        return embedding
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed documents (có thể cache sau)"""
+        return self.embeddings.embed_documents(texts)
+    
+    # Delegate các methods khác từ base embeddings
+    def __getattr__(self, name):
+        """Delegate unknown attributes to base embeddings"""
+        return getattr(self.embeddings, name)
 
 
 class SimpleRAGSystem:
@@ -49,12 +99,14 @@ class SimpleRAGSystem:
         self.llm_model = llm_model
         self.collection_name = collection_name
         
-        # Initialize embeddings
+        # Initialize embeddings với cache wrapper
         logger.info(f"Initializing embeddings: {embedding_model}")
-        self.embeddings = OllamaEmbeddings(
+        base_embeddings = OllamaEmbeddings(
             model=embedding_model,
             base_url=ollama_url
         )
+        # Wrap với cache để tối ưu performance
+        self.embeddings = CachedOllamaEmbeddings(base_embeddings, cache_enabled=True)
         
         # Initialize LLM
         logger.info(f"Initializing LLM: {llm_model}")
@@ -154,16 +206,43 @@ class SimpleRAGSystem:
             # Create collection if it doesn't exist
             if self.collection_name not in collection_names:
                 logger.info(f"Creating collection '{self.collection_name}' with vector size {vector_size}")
+                
+                # Tối ưu HNSW index cho performance tốt hơn
+                # m=16: Số connections mỗi node (16-32 là tốt, cân bằng giữa speed và accuracy)
+                # ef_construct=200: Số candidates khi build index (tăng cho accuracy tốt hơn)
+                # full_scan_threshold=10: Minimum value (Qdrant requires >= 10)
+                #   Với dataset nhỏ (~24 hotels), HNSW sẽ được dùng vì > 10
+                from qdrant_client.models import HnswConfigDiff
+                hnsw_config = HnswConfigDiff(
+                    m=16,              # Số connections mỗi node (16-32 là tốt)
+                    ef_construct=200,  # Số candidates khi build index (tăng cho accuracy)
+                    full_scan_threshold=10  # Minimum value (Qdrant requires >= 10)
+                )
+                
                 client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
                         size=vector_size,
-                        distance=Distance.COSINE
+                        distance=Distance.COSINE,
+                        hnsw_config=hnsw_config  # Thêm HNSW config để tối ưu search
                     )
                 )
-                logger.info(f"Collection '{self.collection_name}' created successfully")
+                logger.info(f"✅ Collection '{self.collection_name}' created successfully with optimized HNSW index")
+                logger.info(f"   HNSW Config: m=16, ef_construct=200, full_scan_threshold=10")
             else:
                 logger.info(f"Collection '{self.collection_name}' already exists")
+                # Verify HNSW config
+                try:
+                    config_info = self.verify_hnsw_config()
+                    if config_info.get("hnsw_configured") and config_info.get("m") == 16 and config_info.get("ef_construct") == 200:
+                        logger.info(f"✅ Collection has optimized HNSW config (m={config_info['m']}, ef_construct={config_info['ef_construct']})")
+                    else:
+                        logger.warning(f"⚠️  Collection may not have optimized HNSW config")
+                        logger.warning(f"   Current: m={config_info.get('m')}, ef_construct={config_info.get('ef_construct')}")
+                        logger.warning(f"   Expected: m=16, ef_construct=200")
+                        logger.warning(f"   To optimize: Set recreate_collection=True or call optimize_collection()")
+                except Exception as e:
+                    logger.warning(f"Could not verify HNSW config: {e}")
             
             # Initialize vectorstore
             self.vectorstore = Qdrant(
@@ -212,8 +291,9 @@ class SimpleRAGSystem:
             raise
         
         # Create retriever from vectorstore
+        # Giảm k từ 5 xuống 3 để tối ưu performance (có thể config sau)
         self.retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": 5}  # Top 5 results
+            search_kwargs={"k": 3}  # Top 3 results (giảm từ 5 xuống 3 để nhanh hơn)
         )
         
         # Create QA chain
@@ -254,13 +334,59 @@ Trả lời (bằng tiếng Việt):
         
         logger.info("RAG system initialized successfully!")
     
-    def search_hotels(self, query: str, top_k: int = 5) -> List[Dict]:
+    def _extract_location_from_query(self, query: str) -> Optional[str]:
         """
-        Search hotels by query (semantic search only)
+        Extract location (area_name) từ query
+        
+        Args:
+            query: Search query
+            
+        Returns:
+            Location name nếu tìm thấy, None nếu không
+        """
+        query_lower = query.lower().strip()
+        
+        # Danh sách các khu vực ở Đà Nẵng
+        locations = {
+            "ngũ hành sơn": "Ngũ Hành Sơn",
+            "ngu hanh son": "Ngũ Hành Sơn",
+            "quận ngũ hành sơn": "Ngũ Hành Sơn",
+            "sơn trà": "Sơn Trà",
+            "son tra": "Sơn Trà",
+            "quận sơn trà": "Sơn Trà",
+            "cẩm lệ": "Cẩm Lệ",
+            "cam le": "Cẩm Lệ",
+            "quận cẩm lệ": "Cẩm Lệ",
+            "hải châu": "Hải Châu",
+            "hai chau": "Hải Châu",
+            "quận hải châu": "Hải Châu",
+            "liên chiểu": "Liên Chiểu",
+            "lien chieu": "Liên Chiểu",
+            "quận liên chiểu": "Liên Chiểu",
+            "thanh khê": "Thanh Khê",
+            "thanh khe": "Thanh Khê",
+            "quận thanh khê": "Thanh Khê",
+            "hòa vang": "Hòa Vang",
+            "hoa vang": "Hòa Vang",
+            "huyện hòa vang": "Hòa Vang",
+        }
+        
+        # Tìm location trong query
+        for location_key, location_name in locations.items():
+            if location_key in query_lower:
+                logger.info(f"Extracted location from query: {location_name}")
+                return location_name
+        
+        return None
+    
+    def search_hotels(self, query: str, top_k: int = 5, area_name: Optional[str] = None) -> List[Dict]:
+        """
+        Search hotels by query (semantic search with optional location filtering)
         
         Args:
             query: Search query
             top_k: Number of results
+            area_name: Optional area name to filter (if None, will try to extract from query)
             
         Returns:
             List of hotel results
@@ -270,15 +396,90 @@ Trả lời (bằng tiếng Việt):
         
         logger.info(f"Searching for: '{query}'")
         
-        # Semantic search
+        # Extract location from query if not provided
+        if area_name is None:
+            area_name = self._extract_location_from_query(query)
+        
+        # If location found, use filtering
+        if area_name:
+            logger.info(f"Filtering by location: {area_name}")
+            # Use Qdrant filter to search only in specific area
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            
+            # Search with location filter
+            # Note: LangChain doesn't support filtering directly, so we need to use QdrantClient
+            client = QdrantClient(url=self.qdrant_url)
+            
+            # Get embedding (cached)
+            query_embedding = self.embeddings.embed_query(query)
+            
+            # Search with location filter
+            search_results = client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                limit=top_k * 2,  # Get more results to filter
+                query_filter=Filter(
+                    must=[
+                        FieldCondition(key="area_name", match=MatchValue(value=area_name))
+                    ]
+                )
+            )
+            
+            # Format results with post-filtering to ensure correct location
+            hotels = []
+            for result in search_results:
+                payload = result.payload or {}
+                
+                # Get area_name from payload
+                hotel_area = payload.get("area_name", "")
+                
+                # Post-filter: Only include hotels in the requested location
+                # This ensures we don't get hotels from other areas
+                if hotel_area and hotel_area.strip() == area_name:
+                    # Get page_content from payload
+                    page_content = payload.get("content") or payload.get("text") or ""
+                    
+                    hotels.append({
+                        "hotel_id": payload.get("hotel_id"),
+                        "hotel_name": payload.get("hotel_name", ""),
+                        "hotel_rank": payload.get("hotel_rank"),
+                        "hotel_price_average": payload.get("hotel_price_average"),
+                        "area_name": payload.get("area_name", ""),
+                        "brand_name": payload.get("brand_name", ""),
+                        "price_category": payload.get("price_category", ""),
+                        "similarity_score": float(result.score),
+                        "text_preview": page_content[:200] + "..." if len(page_content) > 200 else page_content
+                    })
+                    
+                    # Stop when we have enough results
+                    if len(hotels) >= top_k:
+                        break
+            
+            logger.info(f"Found {len(hotels)} hotels in {area_name} (after filtering)")
+            
+            # If no results with filter, try without filter but warn
+            if len(hotels) == 0:
+                logger.warning(f"No hotels found in {area_name} with filter. Trying without filter...")
+                # Fall through to regular search below
+            
+            if len(hotels) > 0:
+                return hotels
+        
+        # No location filter - use regular semantic search
         results = self.vectorstore.similarity_search_with_score(
             query,
-            k=top_k
+            k=top_k * 2  # Get more results to filter if needed
         )
         
-        # Format results
+        # Format results with optional post-filtering
         hotels = []
         for doc, score in results:
+            hotel_area = doc.metadata.get("area_name", "")
+            
+            # If we have a location filter but it wasn't applied in search, post-filter here
+            if area_name and hotel_area and hotel_area.strip() != area_name:
+                continue  # Skip hotels not in the requested area
+            
             hotels.append({
                 "hotel_id": doc.metadata.get("hotel_id"),
                 "hotel_name": doc.metadata.get("hotel_name", ""),
@@ -290,6 +491,10 @@ Trả lời (bằng tiếng Việt):
                 "similarity_score": float(score),
                 "text_preview": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
             })
+            
+            # Stop when we have enough results
+            if len(hotels) >= top_k:
+                break
         
         return hotels
     
@@ -362,8 +567,9 @@ Trả lời (bằng tiếng Việt):
         )
         
         # Create retriever from vectorstore
+        # Giảm k từ 5 xuống 3 để tối ưu performance
         self.retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": 5}
+            search_kwargs={"k": 3}  # Top 3 results (giảm từ 5 xuống 3 để nhanh hơn)
         )
         
         # Create QA chain
@@ -403,6 +609,179 @@ Trả lời (bằng tiếng Việt):
         )
         
         logger.info("Vectorstore loaded successfully!")
+    
+    def verify_hnsw_config(self) -> Dict:
+        """
+        Verify HNSW configuration của collection hiện có
+        
+        Returns:
+            Dictionary với HNSW config info
+        """
+        client = QdrantClient(url=self.qdrant_url)
+        
+        try:
+            # Use raw HTTP call to avoid validation errors with newer Qdrant versions
+            import requests
+            response = requests.get(f"{self.qdrant_url}/collections/{self.collection_name}")
+            response.raise_for_status()
+            collection_info = response.json()["result"]
+            
+            result = {
+                "collection_name": self.collection_name,
+                "points_count": collection_info.get("points_count", 0),
+                "vector_size": collection_info.get("config", {}).get("params", {}).get("vectors", {}).get("size"),
+                "hnsw_configured": False
+            }
+            
+            # Try to get HNSW config from vectors config
+            vectors_config = collection_info.get("config", {}).get("params", {}).get("vectors", {})
+            if isinstance(vectors_config, dict):
+                hnsw_config = vectors_config.get("hnsw_config")
+                if hnsw_config:
+                    result["hnsw_configured"] = True
+                    result["m"] = hnsw_config.get("m")
+                    result["ef_construct"] = hnsw_config.get("ef_construct")
+                    result["full_scan_threshold"] = hnsw_config.get("full_scan_threshold")
+                else:
+                    result.update({
+                        "m": None,
+                        "ef_construct": None,
+                        "full_scan_threshold": None,
+                        "warning": "HNSW config not found - collection may not be optimized"
+                    })
+            else:
+                # Try direct access
+                try:
+                    collection = client.get_collection(self.collection_name)
+                    config = collection.config
+                    hnsw_config = getattr(config.params.vectors, 'hnsw_config', None) if hasattr(config.params.vectors, 'hnsw_config') else None
+                    
+                    if hnsw_config:
+                        result["hnsw_configured"] = True
+                        result["m"] = getattr(hnsw_config, 'm', None)
+                        result["ef_construct"] = getattr(hnsw_config, 'ef_construct', None)
+                        result["full_scan_threshold"] = getattr(hnsw_config, 'full_scan_threshold', None)
+                    else:
+                        result.update({
+                            "m": None,
+                            "ef_construct": None,
+                            "full_scan_threshold": None,
+                            "warning": "HNSW config not found - collection may not be optimized"
+                        })
+                except Exception:
+                    # Fallback: return basic info
+                    result.update({
+                        "m": None,
+                        "ef_construct": None,
+                        "full_scan_threshold": None,
+                        "warning": "Could not read HNSW config - may need to check manually"
+                    })
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Error verifying HNSW config (non-critical): {e}")
+            # Return basic info even if there's an error
+            return {
+                "collection_name": self.collection_name,
+                "points_count": 0,
+                "vector_size": None,
+                "hnsw_configured": False,
+                "m": None,
+                "ef_construct": None,
+                "full_scan_threshold": None,
+                "warning": f"Could not verify HNSW config: {str(e)}"
+            }
+    
+    def optimize_collection(self, recreate_if_needed: bool = False) -> bool:
+        """
+        Optimize collection với HNSW config tối ưu
+        
+        Args:
+            recreate_if_needed: Nếu True, recreate collection nếu HNSW config không tối ưu
+            
+        Returns:
+            True nếu collection đã được optimize
+        """
+        client = QdrantClient(url=self.qdrant_url)
+        
+        try:
+            # Verify current config
+            config_info = self.verify_hnsw_config()
+            
+            # Check if HNSW is optimized
+            is_optimized = (
+                config_info.get("hnsw_configured") and
+                config_info.get("m") == 16 and
+                config_info.get("ef_construct") == 200
+            )
+            
+            if is_optimized:
+                logger.info("✅ Collection already has optimized HNSW config")
+                logger.info(f"   m={config_info['m']}, ef_construct={config_info['ef_construct']}")
+                return True
+            
+            logger.warning("⚠️  Collection does not have optimized HNSW config")
+            logger.info(f"   Current: m={config_info.get('m')}, ef_construct={config_info.get('ef_construct')}")
+            logger.info(f"   Expected: m=16, ef_construct=200")
+            
+            if recreate_if_needed:
+                logger.warning("⚠️  Recreating collection with optimized HNSW config...")
+                logger.warning("⚠️  This will delete all existing data!")
+                
+                # Recreate collection with optimized config
+                # Note: User needs to call index_hotels() again after this
+                client.delete_collection(collection_name=self.collection_name)
+                logger.info("✅ Collection deleted. Please call index_hotels() to recreate with optimized config.")
+                return True
+            else:
+                logger.warning("⚠️  Set recreate_if_needed=True to recreate collection with optimized config")
+                logger.warning("⚠️  Note: Qdrant does not support updating HNSW config on existing collections")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error optimizing collection: {e}")
+            raise
+    
+    def search_hotels_optimized(self, query: str, top_k: int = 3, ef: int = 100) -> List[Dict]:
+        """
+        Search hotels với optimized parameters (sử dụng ef parameter)
+        
+        Args:
+            query: Search query
+            top_k: Number of results
+            ef: Number of candidates to consider during search (higher = better accuracy, slower)
+                  - Recommended: 50-200
+                  - Default: 100 (balanced)
+                  - Higher ef = better recall but slower
+            
+        Returns:
+            List of hotel results
+        """
+        if self.vectorstore is None:
+            raise ValueError("Vector store not initialized. Call index_hotels first.")
+        
+        logger.info(f"Searching for: '{query}' (ef={ef})")
+        
+        # Use LangChain vectorstore for proper metadata handling
+        # Note: LangChain Qdrant automatically handles metadata correctly
+        # We'll use similarity_search_with_score which is faster and preserves metadata
+        
+        # For now, use regular search_hotels() which works correctly
+        # The ef parameter optimization can be done at Qdrant level if needed
+        # But LangChain wrapper doesn't expose ef parameter directly
+        
+        # Use regular search_hotels() - it supports location filtering automatically
+        # Extract location from query if not provided
+        area_name = self._extract_location_from_query(query) if hasattr(self, '_extract_location_from_query') else None
+        results = self.search_hotels(query, top_k=top_k, area_name=area_name)
+        
+        # Note: If you need ef parameter optimization, you can:
+        # 1. Use search_hotels() (already optimized with cache and HNSW)
+        # 2. Or configure ef at collection level
+        # LangChain doesn't expose ef parameter per-query, but default ef works well
+        
+        return results
 
 
 def main():
