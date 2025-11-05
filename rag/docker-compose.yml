@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_rag
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_storage:/qdrant/storage
+      - ./qdrant_config:/qdrant/config  # Optional: custom config
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__HOST=0.0.0.0
+      - QDRANT__LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - rag_network
+
+  # Optional: Redis for caching (improve performance)
+  redis:
+    image: redis:7-alpine
+    container_name: redis_rag
+    ports:
+      - "6380:6379"  # Changed external port to 6380 to avoid conflict
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - rag_network
+
+  # Optional: RAG API Service (if you want to containerize the API)
+  # Uncomment if you want to run API in Docker
+  # rag_api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.rag
+  #   container_name: rag_api
+  #   ports:
+  #     - "5000:5000"
+  #   volumes:
+  #     - ./datasets_extracted:/app/datasets_extracted
+  #     - ./rag:/app/rag
+  #   environment:
+  #     - QDRANT_URL=http://qdrant:6333
+  #     - OLLAMA_URL=http://host.docker.internal:11434  # Connect to host Ollama
+  #     - REDIS_URL=redis://redis:6379
+  #   depends_on:
+  #     qdrant:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - rag_network
+
+volumes:
+  qdrant_storage:
+    driver: local
+    name: qdrant_rag_storage
+  redis_data:
+    driver: local
+    name: redis_rag_data
+
+networks:
+  rag_network:
+    driver: bridge
+    name: rag_network
+
