@@ -36,3 +36,5 @@ interactions_parquet.snappy
 # OS
 .DS_Store
 Thumbs.db
+
+rag/venv_rag/

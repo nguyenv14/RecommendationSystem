@@ -14,13 +14,33 @@ def main():
         ollama_url="http://localhost:11434",
         qdrant_url="http://localhost:6333",
         embedding_model="bge-m3",
-        llm_model="llama2"
+        llm_model="qwen3"  # qwen3 hỗ trợ tiếng Việt rất tốt
     )
     
     # Check if already indexed
     try:
         rag.load_vectorstore()
-        print("✅ Loaded existing vectorstore")
+        # Check if collection has data
+        from qdrant_client import QdrantClient
+        client = QdrantClient(url="http://localhost:6333")
+        try:
+            coll = client.get_collection("hotels")
+            if coll.points_count == 0:
+                print(f"⚠️  Collection exists but is empty ({coll.points_count} points)")
+                print("📦 Indexing hotels...")
+                rag.index_hotels(
+                    normalized_data_path="rag/normalized_data/normalized_hotels.csv",
+                    recreate_collection=True
+                )
+            else:
+                print(f"✅ Loaded existing vectorstore ({coll.points_count} points)")
+        except Exception as e:
+            print(f"⚠️  Cannot check collection: {e}")
+            print("📦 Indexing hotels...")
+            rag.index_hotels(
+                normalized_data_path="rag/normalized_data/normalized_hotels.csv",
+                recreate_collection=True
+            )
     except Exception as e:
         print(f"⚠️  Cannot load existing vectorstore: {e}")
         print("📦 Indexing hotels...")

@@ -114,19 +114,54 @@ http://localhost:5000/health
 
 ### **Environment Variables**
 
-Các services có thể config qua environment variables hoặc docker-compose.yml:
+⚠️ **SECURITY WARNING**: Never hardcode passwords, API keys, or secrets in docker-compose.yml or code files. Always use environment variables.
+
+**Create `.env` file** (already in `.gitignore`):
+```bash
+# Qdrant Configuration
+QDRANT_API_KEY=your-secure-api-key-here
+
+# Redis Configuration  
+REDIS_PASSWORD=your-secure-password-here
+
+# Service URLs
+QDRANT_URL=http://localhost:6333
+OLLAMA_URL=http://localhost:11434
+REDIS_URL=redis://localhost:6380
+```
+
+**Load environment variables in docker-compose.yml:**
+```yaml
+services:
+  qdrant:
+    env_file:
+      - .env
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+  
+  redis:
+    env_file:
+      - .env
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+```
 
 **Qdrant:**
 ```yaml
 environment:
   - QDRANT__SERVICE__HTTP_PORT=6333
   - QDRANT__SERVICE__GRPC_PORT=6334
-  - QDRANT__LOG_LEVEL=INFO
+  - QDRANT__SERVICE__LOG_LEVEL=INFO
+  # Use environment variable for API key (production)
+  # - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
 ```
 
 **Redis:**
 ```yaml
+# Development (no password)
 command: redis-server --appendonly yes
+
+# Production (with password - use environment variable)
+# command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
 ```
 
 **RAG API:**
@@ -134,7 +169,10 @@ command: redis-server --appendonly yes
 environment:
   - QDRANT_URL=http://qdrant:6333
   - OLLAMA_URL=http://host.docker.internal:11434
+  # Without password
   - REDIS_URL=redis://redis:6379
+  # With password (production)
+  # - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
 ```
 
 ### **Volumes**
@@ -328,16 +366,28 @@ ports:
   - "127.0.0.1:6333:6333"  # Only localhost
 ```
 
-2. **Add authentication** (Qdrant):
+2. **Add authentication** (Qdrant - use environment variable):
 ```yaml
+# ✅ GOOD: Use environment variable
 environment:
-  - QDRANT__SERVICE__API_KEY=your-api-key
+  - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+
 ```
 
-3. **Redis password**:
+3. **Redis password** (use environment variable, never hardcode):
 ```yaml
-command: redis-server --requirepass yourpassword
+# ✅ GOOD: Use environment variable
+command: redis-server --requirepass ${REDIS_PASSWORD}
+environment:
+  - REDIS_PASSWORD=${REDIS_PASSWORD}
+
 ```
+
+**⚠️ Security Best Practices:**
+- Never commit passwords or secrets to git
+- Use environment variables or secret management tools (e.g., Docker secrets, AWS Secrets Manager)
+- Store secrets in `.env` file (add to `.gitignore`)
+- Rotate passwords regularly
 
 ---
 
@@ -394,4 +444,3 @@ docker stats
 ---
 
 **TL;DR**: Run `docker-compose up -d` to start Qdrant and Redis. Ollama runs separately on host.
-

@@ -31,7 +31,7 @@ class SimpleRAGSystem:
                  ollama_url="http://localhost:11434",
                  qdrant_url="http://localhost:6333",
                  embedding_model="bge-m3",
-                 llm_model="llama2",
+                 llm_model="qwen3",
                  collection_name="hotels"):
         """
         Initialize RAG System
@@ -58,10 +58,11 @@ class SimpleRAGSystem:
         
         # Initialize LLM
         logger.info(f"Initializing LLM: {llm_model}")
+        # Lower temperature for more consistent Vietnamese responses
         self.llm = Ollama(
             model=llm_model,
             base_url=ollama_url,
-            temperature=0.7
+            temperature=0.3  # Lower temperature for more focused responses
         )
         
         # Vector store (will be initialized after indexing)
@@ -101,6 +102,13 @@ class SimpleRAGSystem:
                 logger.warning(f"Hotel {hotel_id} has no semantic_text, skipping")
                 continue
             
+            # Truncate text if too long (to avoid Ollama timeout)
+            # Keep first 1500 characters to preserve main semantic meaning
+            max_text_length = 1500
+            if len(semantic_text) > max_text_length:
+                logger.debug(f"Truncating hotel {hotel_id} text from {len(semantic_text)} to {max_text_length} chars")
+                semantic_text = semantic_text[:max_text_length] + "..."
+            
             # Create document
             doc = Document(
                 page_content=semantic_text,
@@ -119,25 +127,89 @@ class SimpleRAGSystem:
         
         logger.info(f"Created {len(documents)} documents")
         
-        # Check if collection exists
-        from qdrant_client import QdrantClient
+        # Store in Qdrant with batch processing to avoid timeout
+        logger.info(f"Storing {len(documents)} documents in Qdrant collection: {self.collection_name}")
+        
+        # Create collection first if not exists
+        from qdrant_client.models import Distance, VectorParams
         client = QdrantClient(url=self.qdrant_url)
-        collections = client.get_collections()
-        collection_names = [col.name for col in collections.collections]
         
-        if recreate_collection and self.collection_name in collection_names:
-            logger.info(f"Deleting existing collection: {self.collection_name}")
-            client.delete_collection(collection_name=self.collection_name)
-        
-        # Store in Qdrant
-        logger.info(f"Storing documents in Qdrant collection: {self.collection_name}")
-        self.vectorstore = Qdrant.from_documents(
-            documents=documents,
-            embedding=self.embeddings,
-            url=self.qdrant_url,
-            collection_name=self.collection_name,
-            prefer_grpc=True
-        )
+        try:
+            # Get embedding dimension by testing with first document
+            test_embedding = self.embeddings.embed_query(documents[0].page_content)
+            vector_size = len(test_embedding)
+            
+            # Check if collection exists
+            collections = client.get_collections()
+            collection_names = [col.name for col in collections.collections]
+            
+            # Delete collection if recreate is requested
+            if recreate_collection and self.collection_name in collection_names:
+                logger.info(f"Deleting existing collection: {self.collection_name}")
+                client.delete_collection(collection_name=self.collection_name)
+                # Refresh collection list after deletion
+                collections = client.get_collections()
+                collection_names = [col.name for col in collections.collections]
+            
+            # Create collection if it doesn't exist
+            if self.collection_name not in collection_names:
+                logger.info(f"Creating collection '{self.collection_name}' with vector size {vector_size}")
+                client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=Distance.COSINE
+                    )
+                )
+                logger.info(f"Collection '{self.collection_name}' created successfully")
+            else:
+                logger.info(f"Collection '{self.collection_name}' already exists")
+            
+            # Initialize vectorstore
+            self.vectorstore = Qdrant(
+                client=client,
+                collection_name=self.collection_name,
+                embeddings=self.embeddings
+            )
+            
+            # Add documents in small batches to avoid timeout
+            batch_size = 1  # Process one hotel at a time
+            import time
+            
+            for i in range(0, len(documents), batch_size):
+                batch = documents[i:i+batch_size]
+                logger.info(f"Processing batch {i//batch_size + 1}/{(len(documents)-1)//batch_size + 1} ({len(batch)} documents)")
+                
+                # Retry logic for Ollama timeout
+                max_retries = 3
+                retry_delay = 2  # seconds
+                
+                for retry in range(max_retries):
+                    try:
+                        self.vectorstore.add_texts(
+                            texts=[doc.page_content for doc in batch],
+                            metadatas=[doc.metadata for doc in batch],
+                            ids=[doc.metadata.get("hotel_id", i+j) for j, doc in enumerate(batch)]
+                        )
+                        break  # Success, exit retry loop
+                    except Exception as e:
+                        if retry < max_retries - 1:
+                            logger.warning(f"Error processing batch {i//batch_size + 1} (attempt {retry+1}/{max_retries}): {e}")
+                            logger.info(f"Retrying in {retry_delay} seconds...")
+                            time.sleep(retry_delay)
+                        else:
+                            logger.error(f"Error processing batch {i//batch_size + 1} after {max_retries} attempts: {e}")
+                            raise
+                
+                # Small delay between batches to avoid overwhelming Ollama
+                if i < len(documents) - batch_size:
+                    time.sleep(0.5)
+            
+            logger.info(f"Successfully stored {len(documents)} documents")
+            
+        except Exception as e:
+            logger.error(f"Error storing documents: {e}")
+            raise
         
         # Create retriever from vectorstore
         self.retriever = self.vectorstore.as_retriever(
@@ -146,22 +218,25 @@ class SimpleRAGSystem:
         
         # Create QA chain
         prompt_template = """
-Bạn là trợ lý tư vấn khách sạn chuyên nghiệp tại Đà Nẵng.
+Bạn là trợ lý tư vấn khách sạn chuyên nghiệp tại Đà Nẵng. QUAN TRỌNG: Bạn PHẢI trả lời HOÀN TOÀN bằng tiếng Việt, KHÔNG được sử dụng tiếng Anh trong câu trả lời.
 
-Dựa trên thông tin sau về các khách sạn, hãy trả lời câu hỏi của người dùng một cách tự nhiên và hữu ích.
+Dựa trên thông tin sau về các khách sạn, hãy trả lời câu hỏi của người dùng một cách tự nhiên và hữu ích BẰNG TIẾNG VIỆT.
 
 Context:
 {context}
 
 Câu hỏi: {question}
 
-Hãy trả lời:
-1. Trả lời tự nhiên, dễ hiểu bằng tiếng Việt
-2. Nêu tên khách sạn, địa chỉ, giá nếu có trong context
-3. Nếu không có thông tin phù hợp, hãy nói rõ "Tôi không tìm thấy khách sạn phù hợp với yêu cầu của bạn."
-4. Nếu có nhiều khách sạn, hãy liệt kê top 3-5 khách sạn phù hợp nhất
+YÊU CẦU TRẢ LỜI (QUAN TRỌNG):
+1. TRẢ LỜI HOÀN TOÀN BẰNG TIẾNG VIỆT - KHÔNG SỬ DỤNG TIẾNG ANH
+2. Trả lời tự nhiên, dễ hiểu, chuyên nghiệp
+3. Nêu tên khách sạn, địa chỉ, giá nếu có trong context
+4. Nếu không có thông tin phù hợp, hãy nói rõ "Tôi không tìm thấy khách sạn phù hợp với yêu cầu của bạn."
+5. Nếu có nhiều khách sạn, hãy liệt kê top 3-5 khách sạn phù hợp nhất với thông tin chi tiết
 
-Trả lời:
+LƯU Ý: Chỉ trả lời bằng tiếng Việt, không dịch ra tiếng Anh, không sử dụng từ tiếng Anh.
+
+Trả lời (bằng tiếng Việt):
 """
         
         PROMPT = PromptTemplate(
@@ -263,6 +338,22 @@ Trả lời:
         # Create Qdrant client
         client = QdrantClient(url=self.qdrant_url)
         
+        # Check if collection exists
+        try:
+            collections = client.get_collections()
+            collection_names = [col.name for col in collections.collections]
+            
+            if self.collection_name not in collection_names:
+                raise ValueError(
+                    f"Collection '{self.collection_name}' does not exist in Qdrant. "
+                    f"Please run index_hotels() first."
+                )
+            
+            logger.info(f"Collection '{self.collection_name}' exists")
+        except Exception as e:
+            logger.error(f"Error checking collection: {e}")
+            raise
+        
         # Load existing vectorstore
         self.vectorstore = Qdrant(
             client=client,
@@ -277,22 +368,25 @@ Trả lời:
         
         # Create QA chain
         prompt_template = """
-Bạn là trợ lý tư vấn khách sạn chuyên nghiệp tại Đà Nẵng.
+Bạn là trợ lý tư vấn khách sạn chuyên nghiệp tại Đà Nẵng. QUAN TRỌNG: Bạn PHẢI trả lời HOÀN TOÀN bằng tiếng Việt, KHÔNG được sử dụng tiếng Anh trong câu trả lời.
 
-Dựa trên thông tin sau về các khách sạn, hãy trả lời câu hỏi của người dùng một cách tự nhiên và hữu ích.
+Dựa trên thông tin sau về các khách sạn, hãy trả lời câu hỏi của người dùng một cách tự nhiên và hữu ích BẰNG TIẾNG VIỆT.
 
 Context:
 {context}
 
 Câu hỏi: {question}
 
-Hãy trả lời:
-1. Trả lời tự nhiên, dễ hiểu bằng tiếng Việt
-2. Nêu tên khách sạn, địa chỉ, giá nếu có trong context
-3. Nếu không có thông tin phù hợp, hãy nói rõ "Tôi không tìm thấy khách sạn phù hợp với yêu cầu của bạn."
-4. Nếu có nhiều khách sạn, hãy liệt kê top 3-5 khách sạn phù hợp nhất
+YÊU CẦU TRẢ LỜI (QUAN TRỌNG):
+1. TRẢ LỜI HOÀN TOÀN BẰNG TIẾNG VIỆT - KHÔNG SỬ DỤNG TIẾNG ANH
+2. Trả lời tự nhiên, dễ hiểu, chuyên nghiệp
+3. Nêu tên khách sạn, địa chỉ, giá nếu có trong context
+4. Nếu không có thông tin phù hợp, hãy nói rõ "Tôi không tìm thấy khách sạn phù hợp với yêu cầu của bạn."
+5. Nếu có nhiều khách sạn, hãy liệt kê top 3-5 khách sạn phù hợp nhất với thông tin chi tiết
 
-Trả lời:
+LƯU Ý: Chỉ trả lời bằng tiếng Việt, không dịch ra tiếng Anh, không sử dụng từ tiếng Anh.
+
+Trả lời (bằng tiếng Việt):
 """
         
         PROMPT = PromptTemplate(
@@ -321,7 +415,7 @@ def main():
         ollama_url="http://localhost:11434",
         qdrant_url="http://localhost:6333",
         embedding_model="bge-m3",
-        llm_model="llama2"  # or "mistral", "phi", etc.
+        llm_model="qwen3"  # qwen3 hỗ trợ tiếng Việt rất tốt
     )
     
     # Index hotels
