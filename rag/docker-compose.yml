@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Qdrant Vector Database
   qdrant:
@@ -43,7 +41,49 @@ services:
       retries: 3
     networks:
       - rag_network
+  #mysql  
+  mysql:
+    image: mysql:8.0
+    container_name: mysql_rag
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=rag_db
+    restart: unless-stopped
+    networks:
+      - rag_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
+  #phpmyadmin
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: phpmyadmin_rag
+    ports:
+      - "8181:80"
+    environment:
+      - PMA_HOST=mysql
+      - PMA_PORT=3306
+      - PMA_USER=root
+      - PMA_PASSWORD=root
+    restart: unless-stopped
+    networks:
+      - rag_network
+    depends_on:
+      - mysql
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
   # Optional: RAG API Service (if you want to containerize the API)
   # Uncomment if you want to run API in Docker
   # rag_api:
@@ -76,6 +116,9 @@ volumes:
   redis_data:
     driver: local
     name: redis_rag_data
+  mysql_data:
+    driver: local
+    name: mysql_rag_data
 
 networks:
   rag_network:
