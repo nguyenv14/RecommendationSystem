@@ -41,13 +41,17 @@ def initialize_rag_system():
     embedding_model = os.environ.get('EMBEDDING_MODEL', 'bge-m3')
     llm_model = os.environ.get('LLM_MODEL', 'qwen3')
     collection_name = os.environ.get('COLLECTION_NAME', 'hotels')
+    llm_provider = os.environ.get('LLM_PROVIDER', 'ollama')  # 'ollama' or 'lm_studio'
+    lm_studio_url = os.environ.get('LM_STUDIO_URL', None)  # e.g., 'http://192.168.10.42:1234'
     
     rag_system = SimpleRAGSystem(
         ollama_url=ollama_url,
         qdrant_url=qdrant_url,
         embedding_model=embedding_model,
         llm_model=llm_model,
-        collection_name=collection_name
+        collection_name=collection_name,
+        llm_provider=llm_provider,
+        lm_studio_url=lm_studio_url
     )
     
     # Try to load existing vectorstore

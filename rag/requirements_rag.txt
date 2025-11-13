@@ -3,6 +3,10 @@ flask==3.0.0
 flask-cors==4.0.0
 python-dotenv==1.0.0
 
+# Database
+pymysql==1.1.0
+sqlalchemy==2.0.23
+
 # Data processing
 pandas==2.1.4
 numpy==1.26.2
@@ -11,6 +15,9 @@ numpy==1.26.2
 langchain==0.1.0
 langchain-community==0.0.13
 langchain-core==0.1.10
+
+# OpenAI (required for ChatOpenAI with LM Studio)
+openai>=1.0.0
 
 # Vector database
 qdrant-client==1.7.0
