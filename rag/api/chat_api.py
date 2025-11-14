@@ -7,18 +7,25 @@ Flask API cho chat interface với RAG system
 
 import os
 import socket
+import sys
+from pathlib import Path
 from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
-from pathlib import Path
 import logging
 from typing import Dict, Optional
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from simple_rag_system import SimpleRAGSystem
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+# Set template and static folders to parent directory (where templates/ and static/ are)
+BASE_DIR = Path(__file__).parent.parent
+app = Flask(__name__, 
+            template_folder=str(BASE_DIR / 'templates'),
+            static_folder=str(BASE_DIR / 'static'))
 app.secret_key = os.environ.get('SECRET_KEY', 'rag-chat-secret-key-change-in-production')
 CORS(app)
 

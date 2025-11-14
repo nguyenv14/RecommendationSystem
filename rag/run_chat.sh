@@ -3,6 +3,10 @@
 
 set -e
 
+# Get script directory and cd to it
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
 echo "🚀 Starting RAG Chat API..."
 
 # Activate virtual environment if exists
@@ -81,5 +85,5 @@ echo ""
 
 # Run Flask app
 echo "🌐 Starting Flask API server..."
-python rag_chat_api.py
+python api/chat_api.py
 

@@ -3,6 +3,10 @@
 
 set -e
 
+# Get script directory and cd to it
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
 echo "🚀 Starting RAG Chat API với LM Studio..."
 
 # Activate virtual environment if exists
@@ -93,5 +97,5 @@ echo "🌐 Starting Flask API server..."
 echo "   API will be available at: http://localhost:$PORT"
 echo ""
 
-python rag_chat_api.py
+python api/chat_api.py
 

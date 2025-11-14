@@ -29,11 +29,9 @@ from qdrant_client import QdrantClient
 
 # Import custom modules
 try:
-    from database_connector import DatabaseConnector
-    from smart_chunker import SmartChunker
-    from hotel_data_normalization import HotelDataNormalizer
+    from data import DatabaseConnector, SmartChunker, HotelDataNormalizer
 except ImportError:
-    logger.warning("Could not import database_connector, smart_chunker, or hotel_data_normalization")
+    logger.warning("Could not import data modules (connector, chunker, normalizer)")
     DatabaseConnector = None
     SmartChunker = None
     HotelDataNormalizer = None
@@ -219,6 +217,9 @@ class SimpleRAGSystem:
         self.use_chunking = True
         self.chunk_size = 800  # Tăng chunk_size để giảm số lượng chunks
         self.chunk_overlap = 50  # Giảm overlap để nhanh hơn
+        
+        # Keyword extraction configuration
+        self.use_llm_for_extraction = True  # Use LLM for keyword extraction (smart, flexible)
     
     def _preload_model(self, ollama_url: str, llm_model: str):
         """Pre-load model bằng cách gọi Ollama API trực tiếp"""
@@ -718,7 +719,13 @@ QUAN TRỌNG:
 - Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
 - Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
 
-Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu tên khách sạn, giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
+QUAN TRỌNG VỀ TÊN KHÁCH SẠN:
+- LUÔN trả lời với TÊN KHÁCH SẠN CỤ THỂ (hotel_name), KHÔNG trả lời với thương hiệu (brand_name).
+- Nếu user hỏi về một thương hiệu (ví dụ: "Accor", "Meliá", "InterContinental"), bạn phải liệt kê TẤT CẢ các khách sạn cụ thể thuộc thương hiệu đó từ thông tin trên.
+- Mỗi khách sạn phải được nêu rõ TÊN KHÁCH SẠN CỤ THỂ (ví dụ: "Meliá Vinpearl Riverfront", "Grand Tourane Hotel"), không chỉ nêu thương hiệu chung (ví dụ: KHÔNG chỉ nêu "Accor" hay "Meliá Hotels International").
+- Trong context, "Tên khách sạn:" là tên cụ thể của khách sạn, "Thương hiệu:" là brand name (chỉ để tham khảo).
+
+Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu TÊN KHÁCH SẠN CỤ THỂ, giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
 
 Trả lời:"""
         
@@ -785,9 +792,485 @@ Trả lời:"""
         
         return None
     
+    def _build_qdrant_filter(self, location: Optional[str] = None, 
+                            rank: Optional[int] = None,
+                            price_range: Optional[str] = None,
+                            brand: Optional[str] = None) -> Optional['Filter']:
+        """
+        Build Qdrant filter từ extracted keywords
+        
+        Args:
+            location: Area name
+            rank: Hotel rank (1-5)
+            price_range: "budget" or "luxury"
+            brand: Brand name
+            
+        Returns:
+            Qdrant Filter object hoặc None nếu không có filters
+        """
+        from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+        
+        conditions = []
+        
+        if location:
+            conditions.append(
+                FieldCondition(key="area_name", match=MatchValue(value=location))
+            )
+        
+        if rank:
+            conditions.append(
+                FieldCondition(key="hotel_rank", match=MatchValue(value=rank))
+            )
+        
+        if price_range:
+            # Map price_range to price_category
+            price_category_map = {
+                "budget": ["budget", "economy"],
+                "luxury": ["luxury", "premium"]
+            }
+            # Note: Qdrant không hỗ trợ "in" filter trực tiếp cho string
+            # Có thể dùng should với multiple conditions hoặc post-filter
+            # Tạm thời chỉ filter nếu có price_category trong metadata
+            # (Cần check xem price_category có được store không)
+            pass  # Post-filter sẽ handle price_range
+        
+        if brand:
+            # Brand matching cần fuzzy, không nên filter strict
+            # Post-filter sẽ handle brand
+            pass
+        
+        if not conditions:
+            return None
+        
+        return Filter(must=conditions)
+    
+    def _get_amenity_synonyms(self, amenity: str) -> List[str]:
+        """Get synonyms for amenity keyword"""
+        amenity_synonyms = {
+            "hồ bơi": ["hồ bơi", "bể bơi", "pool", "swimming pool", "bơi"],
+            "spa": ["spa", "massage", "thư giãn", "massage spa"],
+            "gym": ["gym", "phòng gym", "thể hình", "fitness", "phòng tập"],
+            "nhà hàng": ["nhà hàng", "restaurant", "quán ăn"],
+            "wifi": ["wifi", "internet", "mạng"],
+            "parking": ["bãi đỗ xe", "parking", "đậu xe", "đỗ xe", "chỗ đậu xe"],
+            "breakfast": ["bữa sáng", "breakfast", "ăn sáng", "sáng"],
+            "airport": ["sân bay", "airport", "gần sân bay", "cách sân bay"],
+            "beach": ["gần biển", "ven biển", "sát biển", "cách biển", "bờ biển", "beach", "view biển", "hướng biển"],
+            "center": ["trung tâm", "center", "gần trung tâm", "trong trung tâm"]
+        }
+        return amenity_synonyms.get(amenity, [amenity])
+    
+    def _format_hotel_result(self, payload: Dict, similarity_score: float, page_content: str = "") -> Dict:
+        """
+        Format hotel result từ payload
+        
+        Args:
+            payload: Qdrant payload hoặc metadata
+            similarity_score: Similarity score
+            page_content: Text content (optional)
+            
+        Returns:
+            Formatted hotel dict
+        """
+        return {
+            "hotel_id": payload.get("hotel_id"),
+            "hotel_name": payload.get("hotel_name", ""),
+            "hotel_rank": payload.get("hotel_rank"),
+            "hotel_price_average": payload.get("hotel_price_average"),
+            "area_name": payload.get("area_name", ""),
+            "brand_name": payload.get("brand_name", ""),
+            "price_category": payload.get("price_category", ""),
+            "similarity_score": float(similarity_score),
+            "text_preview": page_content[:200] + "..." if len(page_content) > 200 else page_content
+        }
+    
+    def _matches_keyword_filters(self, payload: Dict, page_content: str, extracted_keywords: Dict) -> bool:
+        """
+        Check if hotel matches extracted keyword filters (rank, price, brand, amenities)
+        
+        Args:
+            payload: Hotel payload/metadata
+            page_content: Hotel text content
+            extracted_keywords: Extracted keywords dict
+            
+        Returns:
+            True if matches all filters, False otherwise
+        """
+        # Check rank filter
+        if extracted_keywords.get("rank") and payload.get("hotel_rank"):
+            if payload.get("hotel_rank") != extracted_keywords["rank"]:
+                return False
+        
+        # Check price_range filter
+        if extracted_keywords.get("price_range"):
+            hotel_price_category = payload.get("price_category", "")
+            if extracted_keywords["price_range"] == "budget" and hotel_price_category not in ["budget", "economy"]:
+                return False
+            elif extracted_keywords["price_range"] == "luxury" and hotel_price_category not in ["luxury", "premium"]:
+                return False
+        
+        # Check brand filter
+        if extracted_keywords.get("brand"):
+            hotel_brand = payload.get("brand_name", "").lower()
+            if extracted_keywords["brand"].lower() not in hotel_brand:
+                return False
+        
+        # Check amenities filter (text-based)
+        if extracted_keywords.get("amenities"):
+            page_content_lower = page_content.lower()
+            amenities_match = all(
+                any(syn in page_content_lower for syn in self._get_amenity_synonyms(amenity))
+                for amenity in extracted_keywords["amenities"]
+            )
+            if not amenities_match:
+                return False
+        
+        return True
+    
+    def _extract_keywords_from_query(self, query: str, use_llm: bool = True) -> Dict:
+        """
+        Extract keywords từ query (location, rank, price, amenities, brand)
+        
+        Args:
+            query: Search query
+            use_llm: Nếu True, dùng LLM để extract (smart, flexible). Nếu False, dùng rule-based (fast, predictable)
+            
+        Returns:
+            Dictionary với các keywords đã extract:
+            {
+                "location": "Ngũ Hành Sơn" or None,
+                "rank": 5 or None,
+                "price_range": "budget" or "luxury" or None,
+                "amenities": ["hồ bơi", "spa"] or [],
+                "brand": "Sheraton" or None,
+                "keywords": ["gần biển", "view biển"] or []
+            }
+        """
+        if use_llm and self.llm is not None:
+            # Use LLM for smart extraction (hiểu ngữ nghĩa tự nhiên)
+            return self._extract_keywords_with_llm(query)
+        else:
+            # Use rule-based extraction (fast, predictable)
+            return self._extract_keywords_rule_based(query)
+    
+    def _extract_keywords_with_llm(self, query: str) -> Dict:
+        """
+        Extract keywords using LLM (smart, flexible)
+        LLM hiểu ngữ nghĩa tự nhiên và handle variations tốt hơn
+        """
+        try:
+            from langchain.prompts import PromptTemplate
+            from langchain.schema import HumanMessage
+            
+            # Prompt đơn giản: chỉ extract keywords quan trọng để Qdrant search tốt hơn
+            extraction_prompt = """Bạn là hệ thống trích xuất từ khóa từ câu hỏi tìm kiếm khách sạn.
+Từ câu hỏi sau, trích xuất các từ khóa quan trọng (keywords) để tìm kiếm tốt hơn.
+
+Câu hỏi: {query}
+
+Nhiệm vụ: Trích xuất các từ khóa quan trọng từ câu hỏi (bỏ qua các từ ngữ pháp, từ thừa).
+Ví dụ:
+- "Khách sạn nào có view biển đẹp ở Ngũ Hành Sơn?" → ["view biển", "Ngũ Hành Sơn"]
+- "Tìm khách sạn 5 sao có hồ bơi giá rẻ" → ["5 sao", "hồ bơi", "giá rẻ"]
+- "Resort sang trọng gần biển có spa" → ["resort", "sang trọng", "gần biển", "spa"]
+
+Trả về JSON format:
+{{
+    "keywords": ["từ khóa 1", "từ khóa 2", ...]
+}}
+
+CHỈ trả về JSON, không có text khác."""
+
+            # Build prompt
+            prompt = extraction_prompt.format(query=query)
+            
+            # Call LLM
+            # ChatOpenAI và Ollama đều support invoke với messages
+            if isinstance(self.llm, ChatOpenAI):
+                # ChatOpenAI (LM Studio)
+                from langchain.schema import HumanMessage
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                response_text = response.content if hasattr(response, 'content') else str(response)
+            elif hasattr(self.llm, 'predict'):
+                # Ollama (có thể dùng predict)
+                response_text = self.llm.predict(prompt)
+            else:
+                # Fallback: invoke trực tiếp
+                response_text = self.llm.invoke(prompt)
+            
+            # Parse JSON response
+            import json
+            import re
+            
+            # Extract JSON từ response (có thể có text thêm)
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                response_text = json_match.group(0)
+            
+            result = json.loads(response_text)
+            
+            # Validate và normalize
+            if not isinstance(result, dict) or "keywords" not in result:
+                logger.warning("LLM returned invalid format, falling back to rule-based")
+                return self._extract_keywords_rule_based(query)
+            
+            extracted_keywords_list = result.get("keywords", [])
+            if not isinstance(extracted_keywords_list, list):
+                extracted_keywords_list = []
+            
+            # Vẫn cần extract location cho filtering (nếu có)
+            location = self._extract_location_from_query(query)
+            
+            # Format về structure cũ để tương thích
+            keywords = {
+                "location": location,
+                "rank": None,
+                "price_range": None,
+                "amenities": [],
+                "brand": None,
+                "keywords": extracted_keywords_list  # Keywords từ LLM
+            }
+            
+            logger.info(f"Extracted keywords with LLM: {extracted_keywords_list}")
+            return keywords
+            
+        except Exception as e:
+            logger.warning(f"LLM extraction failed: {e}, falling back to rule-based")
+            return self._extract_keywords_rule_based(query)
+    
+    def _extract_keywords_rule_based(self, query: str) -> Dict:
+        """
+        Extract keywords using rule-based patterns (fast, predictable)
+        Fallback khi LLM không available hoặc fail
+        """
+        query_lower = query.lower().strip()
+        keywords = {
+            "location": None,
+            "rank": None,
+            "price_range": None,
+            "amenities": [],
+            "brand": None,
+            "keywords": []
+        }
+        
+        # 1. Extract location (đã có method)
+        keywords["location"] = self._extract_location_from_query(query)
+        
+        # 2. Extract rank (sao)
+        rank_patterns = {
+            5: ["5 sao", "năm sao", "5 stars", "luxury", "cao cấp", "sang trọng", "premium"],
+            4: ["4 sao", "bốn sao", "4 stars"],
+            3: ["3 sao", "ba sao", "3 stars"],
+            2: ["2 sao", "hai sao", "2 stars"],
+            1: ["1 sao", "một sao", "1 stars"]
+        }
+        
+        for rank, patterns in rank_patterns.items():
+            if any(pattern in query_lower for pattern in patterns):
+                keywords["rank"] = rank
+                logger.debug(f"Extracted rank: {rank} sao")
+                break
+        
+        # 3. Extract price range
+        budget_patterns = ["giá rẻ", "giá tốt", "giá hợp lý", "giá phải chăng", "giá thấp", "rẻ", "tầm thấp"]
+        luxury_patterns = ["giá cao", "giá đắt", "giá đắt đỏ", "premium", "đắt", "tầm cao", "luxury"]
+        
+        if any(pattern in query_lower for pattern in budget_patterns):
+            keywords["price_range"] = "budget"
+            logger.debug("Extracted price_range: budget")
+        elif any(pattern in query_lower for pattern in luxury_patterns):
+            keywords["price_range"] = "luxury"
+            logger.debug("Extracted price_range: luxury")
+        
+        # 4. Extract amenities
+        amenities_mapping = {
+            "hồ bơi": ["hồ bơi", "bể bơi", "pool", "swimming pool", "bơi"],
+            "spa": ["spa", "massage", "thư giãn", "massage spa"],
+            "gym": ["gym", "phòng gym", "thể hình", "fitness", "phòng tập"],
+            "nhà hàng": ["nhà hàng", "restaurant", "quán ăn"],
+            "wifi": ["wifi", "internet", "mạng"],
+            "parking": ["bãi đỗ xe", "parking", "đậu xe", "đỗ xe", "chỗ đậu xe"],
+            "breakfast": ["bữa sáng", "breakfast", "ăn sáng", "sáng"],
+            "airport": ["sân bay", "airport", "gần sân bay", "cách sân bay"],
+            "beach": ["gần biển", "ven biển", "sát biển", "cách biển", "bờ biển", "beach"],
+            "center": ["trung tâm", "center", "gần trung tâm", "trong trung tâm"]
+        }
+        
+        for amenity, patterns in amenities_mapping.items():
+            if any(pattern in query_lower for pattern in patterns):
+                keywords["amenities"].append(amenity)
+                logger.debug(f"Extracted amenity: {amenity}")
+        
+        # 5. Extract brand (common hotel brands in Đà Nẵng)
+        brand_patterns = {
+            "Sheraton": ["sheraton"],
+            "InterContinental": ["intercontinental", "inter continental"],
+            "Melia": ["melia", "meliá"],
+            "Vinpearl": ["vinpearl"],
+            "Furama": ["furama"],
+            "Pullman": ["pullman"],
+            "Novotel": ["novotel"],
+            "Hyatt": ["hyatt"],
+            "Hilton": ["hilton"],
+            "Marriott": ["marriott"]
+        }
+        
+        for brand, patterns in brand_patterns.items():
+            if any(pattern in query_lower for pattern in patterns):
+                keywords["brand"] = brand
+                logger.debug(f"Extracted brand: {brand}")
+                break
+        
+        # 6. Extract additional keywords (view, features)
+        keyword_patterns = {
+            "view biển": ["view biển", "hướng biển", "nhìn ra biển", "tầm nhìn biển", "view beach"],
+            "view sông": ["view sông", "hướng sông", "nhìn ra sông", "tầm nhìn sông", "view river"],
+            "view thành phố": ["view thành phố", "hướng thành phố", "nhìn ra thành phố", "view city"],
+            "family": ["gia đình", "family", "cho gia đình", "phù hợp gia đình"],
+            "romantic": ["lãng mạn", "romantic", "cặp đôi", "honeymoon"],
+            "business": ["công tác", "business", "doanh nhân"]
+        }
+        
+        for keyword, patterns in keyword_patterns.items():
+            if any(pattern in query_lower for pattern in patterns):
+                keywords["keywords"].append(keyword)
+                logger.debug(f"Extracted keyword: {keyword}")
+        
+        # Log extracted keywords
+        if any(v for v in keywords.values() if v):
+            logger.info(f"Extracted keywords (rule-based): {keywords}")
+        
+        return keywords
+    
+    def _search_with_qdrant_filter(self, query: str, query_embedding: List[float], 
+                                   area_name: str, extracted_keywords: Dict, 
+                                   top_k: int) -> List[Dict]:
+        """
+        Search hotels using QdrantClient with location filter (Layer 2: Retrieval Pipeline)
+        
+        Args:
+            query: Search query
+            query_embedding: Query embedding vector
+            area_name: Location to filter
+            extracted_keywords: Extracted keywords
+            top_k: Number of results
+            
+        Returns:
+            List of hotel results
+        """
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        
+        client = QdrantClient(url=self.qdrant_url)
+        
+        # Build Qdrant filter
+        qdrant_filter = self._build_qdrant_filter(
+            location=area_name,
+            rank=extracted_keywords.get("rank"),
+            price_range=extracted_keywords.get("price_range"),
+            brand=extracted_keywords.get("brand")
+        )
+        
+        # Search with filter
+        search_results = client.search(
+            collection_name=self.collection_name,
+            query_vector=query_embedding,
+            limit=min(top_k * 2, 10),  # Get more results for post-filtering
+            query_filter=qdrant_filter,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        # Format and post-filter results
+        hotels = []
+        for result in search_results:
+            payload = result.payload or {}
+            hotel_area = payload.get("area_name", "")
+            
+            # Post-filter: location must match
+            if not hotel_area or hotel_area.strip() != area_name:
+                continue
+            
+            # Get page_content
+            page_content = payload.get("content") or payload.get("text") or ""
+            
+            # Post-filter: keyword filters (rank, price, brand, amenities)
+            if not self._matches_keyword_filters(payload, page_content, extracted_keywords):
+                continue
+            
+            # Format result
+            hotels.append(self._format_hotel_result(payload, result.score, page_content))
+            
+            if len(hotels) >= top_k:
+                break
+        
+        logger.info(f"Found {len(hotels)} hotels in {area_name} (after filtering)")
+        return hotels
+    
+    def _search_without_filter(self, query: str, query_embedding: List[float],
+                               area_name: Optional[str], extracted_keywords: Dict,
+                               top_k: int) -> List[Dict]:
+        """
+        Search hotels using LangChain vectorstore without filter (Layer 2: Retrieval Pipeline)
+        
+        Args:
+            query: Search query
+            query_embedding: Query embedding vector (not used, but kept for consistency)
+            area_name: Optional location for post-filtering
+            extracted_keywords: Extracted keywords
+            top_k: Number of results
+            
+        Returns:
+            List of hotel results
+        """
+        # Use LangChain vectorstore for simple semantic search
+        results = self.vectorstore.similarity_search_with_score(
+            query,
+            k=min(top_k * 2, 10)  # Get more results for post-filtering
+        )
+        
+        hotels = []
+        for doc, score in results:
+            # Convert distance to similarity
+            similarity_score = max(0, 1 - score)
+            
+            # Filter by similarity threshold
+            if similarity_score < 0.3:
+                continue
+            
+            # Validate hotel name
+            hotel_name = doc.metadata.get("hotel_name", "").strip()
+            if not hotel_name:
+                continue
+            
+            # Post-filter: location (if specified)
+            hotel_area = doc.metadata.get("area_name", "")
+            if area_name and hotel_area and hotel_area.strip() != area_name:
+                continue
+            
+            # Post-filter: keyword filters
+            if not self._matches_keyword_filters(doc.metadata, doc.page_content, extracted_keywords):
+                continue
+            
+            # Format result
+            hotels.append(self._format_hotel_result(
+                doc.metadata, 
+                similarity_score, 
+                doc.page_content
+            ))
+            
+            if len(hotels) >= top_k:
+                break
+        
+        return hotels
+    
     def search_hotels(self, query: str, top_k: int = 5, area_name: Optional[str] = None) -> List[Dict]:
         """
         Search hotels by query (semantic search with optional location filtering)
+        
+        Architecture: Layer 2 - Retrieval Pipeline
+        - Uses QdrantClient for filtered search (location)
+        - Uses LangChain vectorstore for simple search
+        - Post-filters by extracted keywords
         
         Args:
             query: Search query
@@ -802,132 +1285,55 @@ Trả lời:"""
         
         logger.info(f"Searching for: '{query}'")
         
+        # Extract keywords from query (use LLM nếu available, fallback to rule-based)
+        extracted_keywords = self._extract_keywords_from_query(
+            query, 
+            use_llm=self.use_llm_for_extraction
+        )
+        
         # Extract location from query if not provided
         if area_name is None:
-            area_name = self._extract_location_from_query(query)
+            area_name = extracted_keywords.get("location")
         
-        # If location found, use filtering
+        # Attach extracted keywords to query để cải thiện semantic search
+        enhanced_query = query
+        if extracted_keywords.get("keywords"):
+            keywords_str = " ".join(extracted_keywords["keywords"])
+            enhanced_query = f"{query} {keywords_str}"
+            logger.debug(f"Enhanced query with keywords: {enhanced_query}")
+        
+        # Generate query embedding (cached)
+        query_embedding = self.embeddings.embed_query(enhanced_query)
+        
+        # Route to appropriate search method
         if area_name:
             logger.info(f"Filtering by location: {area_name}")
-            # Use Qdrant filter to search only in specific area
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            
-            # Search with location filter
-            # Note: LangChain doesn't support filtering directly, so we need to use QdrantClient
-            client = QdrantClient(url=self.qdrant_url)
-            
-            # Get embedding (cached)
-            query_embedding = self.embeddings.embed_query(query)
-            
-            # Search with location filter và tối ưu performance
-            # Giảm limit để giảm context size và tăng tốc độ
-            search_results = client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                limit=min(top_k + 1, 5),  # Giảm từ 10 xuống 5 để nhanh hơn
-                query_filter=Filter(
-                    must=[
-                        FieldCondition(key="area_name", match=MatchValue(value=area_name))
-                    ]
-                ),
-                with_payload=True,
-                with_vectors=False  # Không cần vectors trong response để nhanh hơn
+            # Use QdrantClient for filtered search (Layer 2: Retrieval Pipeline)
+            hotels = self._search_with_qdrant_filter(
+                enhanced_query, query_embedding, area_name, extracted_keywords, top_k
             )
-            
-            # Format results with post-filtering to ensure correct location
-            hotels = []
-            for result in search_results:
-                payload = result.payload or {}
-                
-                # Get area_name from payload
-                hotel_area = payload.get("area_name", "")
-                
-                # Post-filter: Only include hotels in the requested location
-                # This ensures we don't get hotels from other areas
-                if hotel_area and hotel_area.strip() == area_name:
-                    # Get page_content from payload
-                    page_content = payload.get("content") or payload.get("text") or ""
-                    
-                    hotels.append({
-                        "hotel_id": payload.get("hotel_id"),
-                        "hotel_name": payload.get("hotel_name", ""),
-                        "hotel_rank": payload.get("hotel_rank"),
-                        "hotel_price_average": payload.get("hotel_price_average"),
-                        "area_name": payload.get("area_name", ""),
-                        "brand_name": payload.get("brand_name", ""),
-                        "price_category": payload.get("price_category", ""),
-                        "similarity_score": float(result.score),
-                        "text_preview": page_content[:200] + "..." if len(page_content) > 200 else page_content
-                    })
-                    
-                    # Stop when we have enough results
-                    if len(hotels) >= top_k:
-                        break
-            
-            logger.info(f"Found {len(hotels)} hotels in {area_name} (after filtering)")
             
             # If no results with filter, try without filter but warn
             if len(hotels) == 0:
                 logger.warning(f"No hotels found in {area_name} with filter. Trying without filter...")
-                # Fall through to regular search below
-            
-            if len(hotels) > 0:
-                return hotels
-        
-        # No location filter - use regular semantic search với tối ưu
-        # Giảm k để giảm context size và tăng tốc độ
-        results = self.vectorstore.similarity_search_with_score(
-            query,
-            k=min(top_k + 1, 5)  # Giảm từ 10 xuống 5 để nhanh hơn (chỉ lấy top_k + 1)
-        )
-        
-        # Format results with optional post-filtering
-        # Note: LangChain similarity_search_with_score returns scores
-        # For cosine distance: score is distance (lower = better, range 0-2)
-        # Convert to similarity: similarity = 1 - distance (higher = better)
-        hotels = []
-        for doc, score in results:
-            # Convert distance to similarity (cosine distance: lower = better)
-            # similarity = 1 - distance, range [1, -1] -> normalize to [0, 1]
-            similarity_score = max(0, 1 - score)  # Normalize to [0, 1]
-            
-            # Filter by similarity threshold (chỉ lấy results có similarity > 0.3)
-            # Lower threshold để có nhiều results hơn
-            if similarity_score < 0.3:
-                continue
-            
-            hotel_area = doc.metadata.get("area_name", "")
-            hotel_name = doc.metadata.get("hotel_name", "").strip()
-            
-            # Filter out hotels without valid name
-            if not hotel_name or hotel_name == "":
-                continue
-            
-            # If we have a location filter but it wasn't applied in search, post-filter here
-            if area_name and hotel_area and hotel_area.strip() != area_name:
-                continue  # Skip hotels not in the requested area
-            
-            hotels.append({
-                "hotel_id": doc.metadata.get("hotel_id"),
-                "hotel_name": hotel_name,
-                "hotel_rank": doc.metadata.get("hotel_rank"),
-                "hotel_price_average": doc.metadata.get("hotel_price_average"),
-                "area_name": doc.metadata.get("area_name", ""),
-                "brand_name": doc.metadata.get("brand_name", ""),
-                "price_category": doc.metadata.get("price_category", ""),
-                "similarity_score": float(similarity_score),  # Use converted similarity score
-                "text_preview": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
-            })
-            
-            # Stop when we have enough results
-            if len(hotels) >= top_k:
-                break
+                hotels = self._search_without_filter(
+                    enhanced_query, query_embedding, None, extracted_keywords, top_k
+                )
+        else:
+            # Use LangChain vectorstore for simple search (Layer 2: Retrieval Pipeline)
+            hotels = self._search_without_filter(
+                enhanced_query, query_embedding, None, extracted_keywords, top_k
+            )
         
         return hotels
     
     def ask(self, question: str) -> Dict:
         """
         Ask question với RAG (Retrieval + Generation)
+        
+        Architecture: Layer 3 - Generation Pipeline
+        - Uses LangChain RetrievalQA chain
+        - Optionally filters by location if extracted from query
         
         Args:
             question: User question
@@ -940,7 +1346,21 @@ Trả lời:"""
         
         logger.info(f"Question: '{question}'")
         
-        # Get answer with RAG
+        # Extract location from question (optional optimization)
+        # If location found, we could use custom retriever with filter
+        # For now, use standard QA chain (semantic search handles location well)
+        extracted_keywords = self._extract_keywords_from_query(
+            question,
+            use_llm=self.use_llm_for_extraction
+        )
+        location = extracted_keywords.get("location")
+        
+        if location:
+            logger.debug(f"Location detected in question: {location} (using semantic search)")
+            # Note: RetrievalQA chain uses semantic search which handles location well
+            # For strict filtering, would need custom retriever (future enhancement)
+        
+        # Get answer with RAG (Layer 3: Generation Pipeline)
         result = self.qa_chain({"query": question})
         
         # Format response
@@ -1018,7 +1438,13 @@ QUAN TRỌNG:
 - Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
 - Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
 
-Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu tên khách sạn, giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
+QUAN TRỌNG VỀ TÊN KHÁCH SẠN:
+- LUÔN trả lời với TÊN KHÁCH SẠN CỤ THỂ (hotel_name), KHÔNG trả lời với thương hiệu (brand_name).
+- Nếu user hỏi về một thương hiệu (ví dụ: "Accor", "Meliá", "InterContinental"), bạn phải liệt kê TẤT CẢ các khách sạn cụ thể thuộc thương hiệu đó từ thông tin trên.
+- Mỗi khách sạn phải được nêu rõ TÊN KHÁCH SẠN CỤ THỂ (ví dụ: "Meliá Vinpearl Riverfront", "Grand Tourane Hotel"), không chỉ nêu thương hiệu chung (ví dụ: KHÔNG chỉ nêu "Accor" hay "Meliá Hotels International").
+- Trong context, "Tên khách sạn:" là tên cụ thể của khách sạn, "Thương hiệu:" là brand name (chỉ để tham khảo).
+
+Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu TÊN KHÁCH SẠN CỤ THỂ, giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
 
 Trả lời:"""
         
