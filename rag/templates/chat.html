@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Chat - Hotel Recommendation Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="chat-container">
+        <!-- Header -->
+        <header class="chat-header">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1>🏨 Hotel Recommendation Assistant</h1>
+                    <p class="subtitle">Trợ lý tư vấn khách sạn tại Đà Nẵng</p>
+                </div>
+                <div class="header-right">
+                    <div class="status-indicator" id="statusIndicator">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Đang kiểm tra...</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Chat Messages Area -->
+        <div class="chat-messages" id="chatMessages">
+            <!-- Welcome Message -->
+            <div class="message bot-message">
+                <div class="message-avatar">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <div class="message-content">
+                    <div class="message-text">
+                        <p>Xin chào! Tôi là trợ lý tư vấn khách sạn tại Đà Nẵng. Tôi có thể giúp bạn:</p>
+                        <ul>
+                            <li>Tìm khách sạn phù hợp với yêu cầu của bạn</li>
+                            <li>Tư vấn về khách sạn 5 sao, 4 sao, giá rẻ...</li>
+                            <li>Tìm khách sạn theo khu vực (Sơn Trà, Ngũ Hành Sơn...)</li>
+                            <li>Tư vấn về tiện ích (spa, hồ bơi, gần biển...)</li>
+                        </ul>
+                        <p>Hãy đặt câu hỏi và tôi sẽ tư vấn cho bạn! 😊</p>
+                    </div>
+                    <div class="message-time"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="chat-input-area">
+            <div class="input-container">
+                <textarea 
+                    id="messageInput" 
+                    placeholder="Nhập câu hỏi của bạn... (Ví dụ: Khách sạn 5 sao gần biển Đà Nẵng)"
+                    rows="1"
+                ></textarea>
+                <button id="sendButton" class="send-button" disabled>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="input-footer">
+                <span class="input-hint">Nhấn Enter để gửi, Shift+Enter để xuống dòng</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sources Modal -->
+    <div class="modal" id="sourcesModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📚 Nguồn tham khảo</h2>
+                <button class="modal-close" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body" id="sourcesContent">
+                <!-- Sources will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Đang xử lý...</p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+</body>
+</html>
+

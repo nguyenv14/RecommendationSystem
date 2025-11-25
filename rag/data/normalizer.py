@@ -133,12 +133,17 @@ class HotelDataNormalizer:
         """
         text_parts = []
         
-        # Hotel name
+        # Hotel name - PRIORITY: Repeat multiple times to emphasize hotel name over brand name
         if pd.notna(hotel.get("hotel_name")):
             name = str(hotel["hotel_name"]).strip()
+            # Add hotel name multiple times at the beginning to increase weight in embeddings
+            text_parts.append(f"Khách sạn {name}")
             text_parts.append(f"Tên khách sạn: {name}")
-            # Add normalized name
-            text_parts.append(f"Tên chuẩn hóa: {self.normalize_text(name)}")
+            # Add normalized name (important for fuzzy matching)
+            normalized_name = self.normalize_text(name)
+            text_parts.append(f"Tên chuẩn hóa: {normalized_name}")
+            # Add hotel name again in description format for better matching
+            text_parts.append(f"Hotel {name}")
         
         # Description with synonyms
         if pd.notna(hotel.get("hotel_desc")):
@@ -166,9 +171,10 @@ class HotelDataNormalizer:
             if area in self.synonym_mappings:
                 text_parts.append(f"Khu vực mở rộng: {' '.join(self.synonym_mappings[area])}")
         
-        # Brand
+        # Brand - Add AFTER hotel name and with lower emphasis
         if pd.notna(hotel.get("brand_name")):
             brand = str(hotel["brand_name"]).strip()
+            # Only add brand once, after hotel info
             text_parts.append(f"Thương hiệu: {brand}")
         
         # Keywords
