@@ -654,26 +654,42 @@ class SimpleRAGSystem:
                             batch_texts.append(page_content)
                             batch_metadatas.append(doc.metadata.copy())  # Use metadata directly
                         
-                        # Use LangChain's add_texts method to ensure proper payload structure
-                        # This ensures page_content is stored correctly for retrieval
-                        # LangChain's add_texts handles the payload structure automatically
+                        # Use Qdrant client directly to properly handle integer IDs
+                        # Qdrant requires integer IDs to be passed as integers, not strings
+                        # LangChain's add_texts converts IDs to strings which Qdrant rejects
                         try:
-                            # Use LangChain's add_texts which handles payload structure correctly
-                            # Note: LangChain might generate its own IDs if we don't provide them correctly
-                            # Convert integer IDs to strings for LangChain compatibility
-                            self.vectorstore.add_texts(
-                                texts=batch_texts,
-                                metadatas=batch_metadatas,
-                                ids=[str(doc_id) for doc_id in batch_ids]  # Convert to string for LangChain
+                            # Generate embeddings for all texts in batch
+                            embeddings_list = [self.embeddings.embed_query(text) for text in batch_texts]
+                            
+                            # Create PointStruct objects with integer IDs
+                            points = []
+                            for doc_id, embedding, text, metadata in zip(batch_ids, embeddings_list, batch_texts, batch_metadatas):
+                                # Prepare payload - include page_content for retrieval
+                                # This matches LangChain's expected payload structure
+                                payload = {
+                                    'page_content': text,  # Required for retrieval
+                                    'metadata': metadata   # Original metadata
+                                }
+                                # Also include all metadata fields at top level for filtering
+                                payload.update(metadata)
+                                
+                                # Create point with integer ID (not string!)
+                                point = PointStruct(
+                                    id=doc_id,  # Use integer ID directly
+                                    vector=embedding,
+                                    payload=payload
+                                )
+                                points.append(point)
+                            
+                            # Use upsert (works for both insert and update)
+                            client.upsert(
+                                collection_name=self.collection_name,
+                                points=points
                             )
+                            
                         except Exception as e:
-                            # If add_texts fails with IDs, try without IDs (LangChain will generate UUIDs)
-                            logger.warning(f"Error adding texts with custom IDs: {e}. Trying without IDs...")
-                            self.vectorstore.add_texts(
-                                texts=batch_texts,
-                                metadatas=batch_metadatas
-                                # Let LangChain generate IDs
-                            )
+                            logger.error(f"Error adding points to Qdrant: {e}")
+                            raise
                         
                         break  # Success
                     except Exception as e:
