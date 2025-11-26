@@ -29,12 +29,13 @@ from qdrant_client import QdrantClient
 
 # Import custom modules
 try:
-    from data import DatabaseConnector, SmartChunker, HotelDataNormalizer
+    from data import DatabaseConnector, SmartChunker, HotelDataNormalizer, CouponDataNormalizer
 except ImportError:
     logger.warning("Could not import data modules (connector, chunker, normalizer)")
     DatabaseConnector = None
     SmartChunker = None
     HotelDataNormalizer = None
+    CouponDataNormalizer = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class SimpleRAGSystem:
                  ollama_url="http://localhost:11434",
                  qdrant_url="http://localhost:6333",
                  embedding_model="bge-m3",
-                 llm_model="qwen3",
+                 llm_model="google/gemma-3n-e4b",
                  collection_name="hotels",
                  llm_provider="ollama",
                  lm_studio_url=None):
@@ -168,7 +169,7 @@ class SimpleRAGSystem:
                     openai_api_base=f"{self.lm_studio_url}/v1",
                     openai_api_key="lm-studio",  # LM Studio doesn't require real API key
                     temperature=0.3,
-                    max_tokens=2048,  # Increased from 512 to allow longer, more detailed responses
+                    max_tokens=512,  # Increased from 512 to allow longer, more detailed responses
                     streaming=False,
                     timeout=120.0,  # Increased timeout for longer generation
                     model_kwargs={}  # Additional model parameters
@@ -183,7 +184,7 @@ class SimpleRAGSystem:
                         base_url=f"{self.lm_studio_url}/v1",
                         api_key="lm-studio",
                         temperature=0.3,
-                        max_tokens=2048,  # Increased from 512 to allow longer, more detailed responses
+                        max_tokens=512,  # Increased from 512 to allow longer, more detailed responses
                         streaming=False,
                         timeout=120.0  # Increased timeout for longer generation
                     )
@@ -525,6 +526,172 @@ class SimpleRAGSystem:
         
         logger.info("✅ Database indexing complete!")
     
+    def index_coupons_from_database(self,
+                                   use_chunking: bool = True,
+                                   chunk_size: int = 800,
+                                   chunk_overlap: int = 50,
+                                   incremental: bool = True,
+                                   recreate_collection: bool = False,
+                                   batch_size: int = 50,
+                                   valid_only: bool = False):
+        """
+        Index coupons từ database MySQL với smart chunking và incremental indexing
+        
+        Args:
+            use_chunking: If True, use smart chunking (recommended for long texts)
+            chunk_size: Size of each chunk (characters)
+            chunk_overlap: Overlap between chunks (characters)
+            incremental: If True, only index new/updated coupons
+            recreate_collection: If True, recreate collection (will delete all data)
+            batch_size: Number of coupons to process in each batch
+            valid_only: If True, only index valid coupons (not expired, qty > 0)
+        """
+        logger.info("🔄 Indexing coupons from database...")
+        
+        # Initialize database connector
+        if DatabaseConnector is None:
+            raise ImportError("DatabaseConnector not available. Please install pymysql and sqlalchemy.")
+        
+        if self.db_connector is None:
+            self.db_connector = DatabaseConnector()
+        
+        # Test database connection
+        if not self.db_connector.test_connection():
+            raise ConnectionError("Failed to connect to database")
+        
+        # Initialize coupon normalizer
+        if CouponDataNormalizer is None:
+            raise ImportError("CouponDataNormalizer not available.")
+        
+        coupon_normalizer = CouponDataNormalizer()
+        
+        # Initialize chunker if needed
+        if use_chunking:
+            if SmartChunker is None:
+                raise ImportError("SmartChunker not available.")
+            
+            if self.chunker is None:
+                self.chunker = SmartChunker(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    min_chunk_size=100,
+                    preserve_sentences=True
+                )
+            self.use_chunking = True
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+            logger.info(f"✅ Smart chunking enabled: chunk_size={chunk_size}, overlap={chunk_overlap}")
+        else:
+            self.use_chunking = False
+            logger.info("⚠️  Smart chunking disabled - using full text")
+        
+        # Get coupons from database
+        if incremental and not recreate_collection:
+            # For coupons, we'll fetch all for now (can add timestamp tracking later)
+            logger.info("📦 Fetching all coupons...")
+            coupons_df = self.db_connector.get_coupons(valid_only=valid_only)
+        else:
+            logger.info("📦 Fetching all coupons...")
+            coupons_df = self.db_connector.get_coupons(valid_only=valid_only)
+        
+        if coupons_df.empty:
+            logger.info("✅ No coupons to index")
+            return
+        
+        logger.info(f"📊 Found {len(coupons_df)} coupons to index")
+        
+        # Create documents with chunking
+        all_documents = []
+        
+        if use_chunking:
+            # Use smart chunking
+            logger.info("📝 Creating documents with smart chunking...")
+            for idx, coupon in coupons_df.iterrows():
+                coupon_id = int(coupon["coupon_id"])
+                
+                # Create semantic text
+                semantic_text = coupon_normalizer.create_semantic_text(coupon)
+                
+                if not semantic_text or not semantic_text.strip():
+                    logger.warning(f"Coupon {coupon_id} has no semantic_text, skipping")
+                    continue
+                
+                # Create coupon data dict
+                coupon_data = {
+                    "coupon_id": coupon_id,
+                    "coupon_name": str(coupon.get("coupon_name", "")),
+                    "coupon_name_code": str(coupon.get("coupon_name_code", "")),
+                    "coupon_desc": str(coupon.get("coupon_desc", "")),
+                    "coupon_price_sale": float(coupon.get("coupon_price_sale", 0)) if pd.notna(coupon.get("coupon_price_sale")) else None,
+                    "coupon_qty_code": int(coupon.get("coupon_qty_code", 0)) if pd.notna(coupon.get("coupon_qty_code")) else None,
+                    "coupon_start_date": str(coupon.get("coupon_start_date", "")) if pd.notna(coupon.get("coupon_start_date")) else None,
+                    "coupon_end_date": str(coupon.get("coupon_end_date", "")) if pd.notna(coupon.get("coupon_end_date")) else None,
+                    "is_valid": coupon_normalizer._is_coupon_valid(coupon),
+                    "location": coupon_normalizer._extract_location(coupon),
+                    "target_audience": coupon_normalizer._extract_target_audience(coupon),
+                    "discount_category": coupon_normalizer._categorize_discount(
+                        float(coupon.get("coupon_price_sale", 0))
+                    ) if pd.notna(coupon.get("coupon_price_sale")) else "",
+                    "normalized_name": coupon_normalizer.normalize_text(coupon.get("coupon_name", "")),
+                }
+                
+                # Chunk coupon document
+                chunks = self.chunker.chunk_coupon_document(coupon_data, semantic_text)
+                all_documents.extend(chunks)
+        else:
+            # Use full text (no chunking)
+            logger.info("📝 Creating documents without chunking...")
+            for idx, coupon in coupons_df.iterrows():
+                coupon_id = int(coupon["coupon_id"])
+                
+                # Create semantic text
+                semantic_text = coupon_normalizer.create_semantic_text(coupon)
+                
+                if not semantic_text or not semantic_text.strip():
+                    logger.warning(f"Coupon {coupon_id} has no semantic_text, skipping")
+                    continue
+                
+                # Truncate if too long
+                max_text_length = 2000
+                if len(semantic_text) > max_text_length:
+                    logger.debug(f"Truncating coupon {coupon_id} text from {len(semantic_text)} to {max_text_length} chars")
+                    semantic_text = semantic_text[:max_text_length] + "..."
+                
+                # Create document
+                doc = Document(
+                    page_content=semantic_text,
+                    metadata={
+                        "coupon_id": coupon_id,
+                        "coupon_name": str(coupon.get("coupon_name", "")),
+                        "coupon_name_code": str(coupon.get("coupon_name_code", "")),
+                        "coupon_price_sale": float(coupon.get("coupon_price_sale", 0)) if pd.notna(coupon.get("coupon_price_sale")) else None,
+                        "is_valid": coupon_normalizer._is_coupon_valid(coupon),
+                        "location": coupon_normalizer._extract_location(coupon),
+                        "target_audience": coupon_normalizer._extract_target_audience(coupon),
+                        "discount_category": coupon_normalizer._categorize_discount(
+                            float(coupon.get("coupon_price_sale", 0))
+                        ) if pd.notna(coupon.get("coupon_price_sale")) else "",
+                        "normalized_name": coupon_normalizer.normalize_text(coupon.get("coupon_name", "")),
+                        "document_type": "coupon",
+                    }
+                )
+                all_documents.append(doc)
+        
+        logger.info(f"✅ Created {len(all_documents)} documents from {len(coupons_df)} coupons")
+        
+        # Store in Qdrant (use same collection as hotels, but with document_type="coupon")
+        self._store_documents_in_qdrant(
+            all_documents,
+            recreate_collection=recreate_collection,
+            batch_size=batch_size,
+            use_upsert=incremental and not recreate_collection
+        )
+        
+        # Initialize retriever and QA chain
+        self._initialize_qa_chain()
+        
+        logger.info("✅ Coupon database indexing complete!")
+    
     def _store_documents_in_qdrant(self,
                                    documents: List[Document],
                                    recreate_collection: bool = False,
@@ -617,30 +784,54 @@ class SimpleRAGSystem:
                         
                         for doc in batch:
                             # Generate integer ID for Qdrant (Qdrant only accepts unsigned int or UUID)
-                            hotel_id = doc.metadata.get("hotel_id", 0)
+                            # Support both hotels and coupons
+                            document_type = doc.metadata.get("document_type", "hotel")
                             
-                            # Get chunk_index if exists (for chunked documents), otherwise 0
-                            chunk_idx = doc.metadata.get("chunk_index", 0)
-                            
-                            # Ensure hotel_id and chunk_idx are integers
-                            try:
-                                hotel_id = int(hotel_id) if hotel_id is not None else 0
-                                chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
-                            except (ValueError, TypeError):
-                                logger.warning(f"Invalid hotel_id or chunk_index: hotel_id={hotel_id}, chunk_idx={chunk_idx}")
-                                hotel_id = 0
-                                chunk_idx = 0
-                            
-                            # Create unique integer ID: hotel_id * 1000000 + chunk_index
-                            # This allows up to 1,000,000 chunks per hotel (more than enough)
-                            # Example: hotel_id=2, chunk_idx=0 -> 2000000
-                            #          hotel_id=2, chunk_idx=1 -> 2000001
-                            #          hotel_id=123, chunk_idx=0 -> 123000000
-                            doc_id = hotel_id * 1000000 + chunk_idx
-                            
-                            # Store chunk_id as string in metadata for reference (if not exists)
-                            if "chunk_id" not in doc.metadata:
-                                doc.metadata["chunk_id"] = f"{hotel_id}_{chunk_idx}"
+                            if document_type == "coupon":
+                                # For coupons: use coupon_id * 1000000 + chunk_index + 1000000000000 (1 trillion offset)
+                                # This ensures no conflict with hotels
+                                coupon_id = doc.metadata.get("coupon_id", 0)
+                                chunk_idx = doc.metadata.get("chunk_index", 0)
+                                
+                                try:
+                                    coupon_id = int(coupon_id) if coupon_id is not None else 0
+                                    chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Invalid coupon_id or chunk_index: coupon_id={coupon_id}, chunk_idx={chunk_idx}")
+                                    coupon_id = 0
+                                    chunk_idx = 0
+                                
+                                # Create unique integer ID with offset: 1000000000000 + coupon_id * 1000000 + chunk_index
+                                # This allows up to 1,000,000 chunks per coupon
+                                # Example: coupon_id=5, chunk_idx=0 -> 1000000005000
+                                doc_id = 1000000000000 + (coupon_id * 1000000) + chunk_idx
+                                
+                                # Store chunk_id as string in metadata for reference (if not exists)
+                                if "chunk_id" not in doc.metadata:
+                                    doc.metadata["chunk_id"] = f"coupon_{coupon_id}_{chunk_idx}"
+                            else:
+                                # For hotels: use hotel_id * 1000000 + chunk_index (original logic)
+                                hotel_id = doc.metadata.get("hotel_id", 0)
+                                chunk_idx = doc.metadata.get("chunk_index", 0)
+                                
+                                try:
+                                    hotel_id = int(hotel_id) if hotel_id is not None else 0
+                                    chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Invalid hotel_id or chunk_index: hotel_id={hotel_id}, chunk_idx={chunk_idx}")
+                                    hotel_id = 0
+                                    chunk_idx = 0
+                                
+                                # Create unique integer ID: hotel_id * 1000000 + chunk_index
+                                # This allows up to 1,000,000 chunks per hotel (more than enough)
+                                # Example: hotel_id=2, chunk_idx=0 -> 2000000
+                                #          hotel_id=2, chunk_idx=1 -> 2000001
+                                #          hotel_id=123, chunk_idx=0 -> 123000000
+                                doc_id = hotel_id * 1000000 + chunk_idx
+                                
+                                # Store chunk_id as string in metadata for reference (if not exists)
+                                if "chunk_id" not in doc.metadata:
+                                    doc.metadata["chunk_id"] = f"{hotel_id}_{chunk_idx}"
                             
                             # Ensure page_content is not None or empty
                             page_content = doc.page_content or ""
@@ -718,30 +909,62 @@ class SimpleRAGSystem:
         # Create retriever với 5 sources để có nhiều thông tin hơn
         self.retriever = self.vectorstore.as_retriever(
             search_kwargs={
-                "k": 5  # Increased from 2 to 5 for more comprehensive responses
+                "k": 3  # Increased from 2 to 5 for more comprehensive responses
             }
         )
         
         # Create QA chain với prompt chi tiết hơn để có response dài hơn
-        prompt_template = """Bạn là trợ lý tư vấn khách sạn tại Đà Nẵng. Trả lời HOÀN TOÀN bằng tiếng Việt.
+        prompt_template = """Bạn là trợ lý tư vấn khách sạn tại Đà Nẵng. Trả lời bằng tiếng Việt.
 
-Thông tin khách sạn:
+=== THÔNG TIN KHÁCH SẠN ===
 {context}
 
-Câu hỏi: {question}
+=== CÂU HỎI ===
+{question}
 
-QUAN TRỌNG: 
-- CHỈ trả lời các câu hỏi liên quan đến khách sạn, nhà nghỉ, resort, homestay tại Đà Nẵng.
-- Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
-- Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
+=== HƯỚNG DẪN TRẢ LỜI ===
 
-QUAN TRỌNG VỀ TÊN KHÁCH SẠN:
-- LUÔN trả lời với TÊN KHÁCH SẠN CỤ THỂ (hotel_name), KHÔNG trả lời với thương hiệu (brand_name).
-- Nếu user hỏi về một thương hiệu (ví dụ: "Accor", "Meliá", "InterContinental"), bạn phải liệt kê TẤT CẢ các khách sạn cụ thể thuộc thương hiệu đó từ thông tin trên.
-- Mỗi khách sạn phải được nêu rõ TÊN KHÁCH SẠN CỤ THỂ (ví dụ: "Meliá Vinpearl Riverfront", "Grand Tourane Hotel"), không chỉ nêu thương hiệu chung (ví dụ: KHÔNG chỉ nêu "Accor" hay "Meliá Hotels International").
-- Trong context, "Tên khách sạn:" là tên cụ thể của khách sạn, "Thương hiệu:" là brand name (chỉ để tham khảo).
+BƯỚC 1 - PHÂN TÍCH CONTEXT:
+Mỗi block thông tin khách sạn có cấu trúc:
+- Dòng đầu tiên: "Khách sạn [TÊN]" hoặc "Tên khách sạn: [TÊN]" → Đây là TÊN CHÍNH THỨC
+- Các dòng tiếp theo: Mô tả, Địa chỉ, Khu vực, Thương hiệu, Từ khóa, Hạng, Giá
+- Dòng "Thương hiệu:" là thông tin PHỤ, CHỈ dùng để phân loại, KHÔNG phải tên khách sạn
 
-Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu TÊN KHÁCH SẠN CỤ THỂ, giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
+BƯỚC 2 - TRÍCH XUẤT TÊN KHÁCH SẠN:
+Với mỗi khách sạn trong context, BẮT BUỘC:
+1. Tìm dòng "Khách sạn [TÊN]" hoặc "Tên khách sạn: [TÊN]" ở ĐẦU block
+2. Copy CHÍNH XÁC [TÊN] đó, KHÔNG được thay đổi hoặc rút gọn
+3. BỎ QUA hoàn toàn dòng "Thương hiệu:" khi đặt tên
+
+BƯỚC 3 - TRẢ LỜI:
+Với mỗi khách sạn phù hợp, viết theo format:
+"Khách sạn: [TÊN CHÍNH XÁC từ bước 2]
+- Địa chỉ: [từ context]
+- Giá: [từ context]
+- Hạng: [từ context]
+- Tiện ích: [từ context]"
+
+=== VÍ DỤ CỤ THỂ ===
+
+VÍ DỤ CONTEXT:
+"Khách sạn Grand Tourane | Tên khách sạn: Grand Tourane | Mô tả: ... | Địa chỉ: 252 Võ Nguyên Giáp | Thương hiệu: InterContinental Hotels Group | Hạng: 5 sao | Giá: 1,523,515 VND"
+
+CÂU HỎI: "Khách sạn 5 sao nào?"
+
+TRẢ LỜI ĐÚNG:
+"Khách sạn: Grand Tourane
+- Địa chỉ: 252 Võ Nguyên Giáp, Sơn Trà
+- Giá: 1,523,515 VND
+- Đánh giá: 5 sao"
+
+TRẢ LỜI SAI (TUYỆT ĐỐI TRÁNH):
+"Khách sạn: InterContinental Đà Nẵng" ← SAI vì dùng brand name
+"Khách sạn: Grand Tourane thuộc InterContinental" ← SAI vì thêm brand vào tên
+
+=== QUY TẮC BỔ SUNG ===
+- Chỉ trả lời câu hỏi về khách sạn tại Đà Nẵng
+- Nếu không tìm thấy khách sạn phù hợp: "Không tìm thấy khách sạn phù hợp trong hệ thống"
+- Nếu câu hỏi không liên quan du lịch: "Xin lỗi, tôi chỉ tư vấn về khách sạn tại Đà Nẵng"
 
 Trả lời:"""
         
@@ -1454,13 +1677,25 @@ QUAN TRỌNG:
 - Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
 - Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
 
-QUAN TRỌNG VỀ TÊN KHÁCH SẠN:
-- LUÔN trả lời với TÊN KHÁCH SẠN CỤ THỂ (hotel_name), KHÔNG trả lời với thương hiệu (brand_name).
-- Nếu user hỏi về một thương hiệu (ví dụ: "Accor", "Meliá", "InterContinental"), bạn phải liệt kê TẤT CẢ các khách sạn cụ thể thuộc thương hiệu đó từ thông tin trên.
-- Mỗi khách sạn phải được nêu rõ TÊN KHÁCH SẠN CỤ THỂ (ví dụ: "Meliá Vinpearl Riverfront", "Grand Tourane Hotel"), không chỉ nêu thương hiệu chung (ví dụ: KHÔNG chỉ nêu "Accor" hay "Meliá Hotels International").
-- Trong context, "Tên khách sạn:" là tên cụ thể của khách sạn, "Thương hiệu:" là brand name (chỉ để tham khảo).
+QUY TẮC BẮT BUỘC VỀ TÊN KHÁCH SẠN - TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM:
+❌ NGHIÊM CẤM sử dụng tên thương hiệu (brand_name) như: "Meliá Hotels International", "Accor", "InterContinental Hotels Group"
+✅ BẮT BUỘC sử dụng TÊN KHÁCH SẠN CỤ THỂ từ trường "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU mỗi block trong context
 
-Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu TÊN KHÁCH SẠN CỤ THỂ, giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
+VÍ DỤ CÁCH TRẢ LỜI ĐÚNG VÀ SAI:
+✅ ĐÚNG: "Grand Tourane Hotel" (lấy từ "Tên khách sạn: Grand Tourane Hotel")
+✅ ĐÚNG: "Meliá Vinpearl Riverfront Đà Nẵng" (lấy từ "Tên khách sạn: Meliá Vinpearl Riverfront Đà Nẵng")
+✅ ĐÚNG: "Pullman Danang Beach Resort" (lấy từ "Tên khách sạn: Pullman Danang Beach Resort")
+❌ SAI: "Meliá Đà Nẵng – Xuân Thiều" (sai vì đây KHÔNG phải tên khách sạn trong database)
+❌ SAI: "Accor Hotel tại Đà Nẵng" (sai vì đây là brand, không phải tên khách sạn cụ thể)
+❌ SAI: "InterContinental Đà Nẵng" (sai nếu tên đầy đủ là "InterContinental Danang Sun Peninsula Resort")
+❌ SAI: "Meliá Hotels International" (sai vì đây là brand name, phải dùng tên khách sạn cụ thể)
+
+CÁCH XÁC ĐỊNH TÊN KHÁCH SẠN ĐÚNG (BẮT BUỘC):
+1. Tìm dòng "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU TIÊN trong mỗi block thông tin của context
+2. Sử dụng CHÍNH XÁC, NGUYÊN VĂN tên đó, KHÔNG RÚT GỌN, KHÔNG thay bằng brand name, KHÔNG tự bịa tên
+3. Dòng "Thương hiệu:" CHỈ để tham khảo nhóm khách sạn, TUYỆT ĐỐI KHÔNG dùng để đặt tên khách sạn trong câu trả lời
+
+Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. BẮT BUỘC nêu TÊN KHÁCH SẠN CỤ THỂ (lấy CHÍNH XÁC từ "Tên khách sạn:" trong context), giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
 
 Trả lời:"""
         

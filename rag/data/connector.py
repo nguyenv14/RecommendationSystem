@@ -262,6 +262,97 @@ class DatabaseConnector:
         else:
             return self.get_hotels(updated_after=last_indexed_at)
     
+    def get_coupons(self, 
+                   coupon_ids: Optional[List[int]] = None,
+                   updated_after: Optional[datetime] = None,
+                   limit: Optional[int] = None,
+                   valid_only: bool = False) -> pd.DataFrame:
+        """
+        Lấy dữ liệu coupon từ database
+        
+        Args:
+            coupon_ids: List of coupon IDs to fetch (None = all)
+            updated_after: Only fetch coupons updated after this datetime
+            limit: Maximum number of coupons to fetch
+            valid_only: If True, only fetch valid coupons (not expired, qty > 0)
+            
+        Returns:
+            DataFrame với thông tin coupon
+        """
+        logger.info("Fetching coupons from database...")
+        
+        # Build query
+        query = """
+        SELECT 
+            c.coupon_id,
+            c.coupon_name,
+            c.coupon_name_code,
+            c.coupon_desc,
+            c.coupon_qty_code,
+            c.coupon_condition,
+            c.coupon_price_sale,
+            c.coupon_start_date,
+            c.coupon_end_date,
+            c.created_at,
+            c.updated_at
+        FROM tbl_coupon c
+        WHERE 1=1
+        """
+        
+        params = {}
+        
+        # Filter by coupon IDs
+        if coupon_ids:
+            placeholders = ','.join([':coupon_id_' + str(i) for i in range(len(coupon_ids))])
+            query += f" AND c.coupon_id IN ({placeholders})"
+            for i, coupon_id in enumerate(coupon_ids):
+                params[f'coupon_id_{i}'] = coupon_id
+        
+        # Filter by updated_at
+        if updated_after:
+            query += " AND (c.updated_at > :updated_after OR c.created_at > :updated_after)"
+            params['updated_after'] = updated_after
+        
+        # Filter valid coupons only
+        if valid_only:
+            now = datetime.now()
+            query += " AND c.coupon_start_date <= :now"
+            query += " AND c.coupon_end_date >= :now"
+            query += " AND c.coupon_qty_code > 0"
+            params['now'] = now
+        
+        # Order by coupon_id
+        query += " ORDER BY c.coupon_id"
+        
+        # Limit
+        if limit:
+            query += " LIMIT :limit"
+            params['limit'] = limit
+        
+        try:
+            # Execute query
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), params)
+                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            
+            logger.info(f"Fetched {len(df)} coupons from database")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error fetching coupons: {e}")
+            raise
+    
+    def get_coupon_count(self) -> int:
+        """Get total number of coupons"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("SELECT COUNT(*) as count FROM tbl_coupon"))
+                count = result.fetchone()[0]
+            return count
+        except Exception as e:
+            logger.error(f"Error getting coupon count: {e}")
+            return 0
+    
     def close(self):
         """Close database connection"""
         self.engine.dispose()

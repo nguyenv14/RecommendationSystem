@@ -147,6 +147,8 @@ class SmartChunker:
                 # Additional metadata để preserve context
                 "is_first_chunk": idx == 0,
                 "is_last_chunk": idx == len(text_chunks) - 1,
+                # Document type
+                "document_type": "hotel",
             }
             
             # Add all other hotel data to metadata
@@ -208,6 +210,112 @@ class SmartChunker:
             all_documents.extend(chunks)
         
         logger.info(f"Created {len(all_documents)} chunks from {len(hotels_df)} hotels")
+        return all_documents
+    
+    def chunk_coupon_document(self, 
+                             coupon_data: Dict,
+                             semantic_text: str) -> List[Document]:
+        """
+        Chunk coupon document với đầy đủ metadata
+        
+        Args:
+            coupon_data: Coupon metadata (coupon_id, coupon_name, etc.)
+            semantic_text: Semantic text to chunk
+            
+        Returns:
+            List of Document objects với metadata đầy đủ
+        """
+        # Split text into chunks
+        text_chunks = self.split_text(semantic_text)
+        
+        # Create documents with metadata
+        documents = []
+        for idx, chunk in enumerate(text_chunks):
+            # Create metadata với đầy đủ thông tin
+            metadata = {
+                "coupon_id": coupon_data.get("coupon_id"),
+                "coupon_name": coupon_data.get("coupon_name", ""),
+                "coupon_name_code": coupon_data.get("coupon_name_code", ""),
+                "coupon_price_sale": coupon_data.get("coupon_price_sale"),
+                "is_valid": coupon_data.get("is_valid", False),
+                "location": coupon_data.get("location", ""),
+                "target_audience": coupon_data.get("target_audience", ""),
+                "discount_category": coupon_data.get("discount_category", ""),
+                "normalized_name": coupon_data.get("normalized_name", ""),
+                # Chunk-specific metadata
+                "chunk_index": idx,
+                "total_chunks": len(text_chunks),
+                "chunk_id": f"{coupon_data.get('coupon_id')}_{idx}",
+                "is_first_chunk": idx == 0,
+                "is_last_chunk": idx == len(text_chunks) - 1,
+                # Document type
+                "document_type": "coupon",
+            }
+            
+            # Add all other coupon data to metadata
+            for key, value in coupon_data.items():
+                if key not in metadata and value is not None:
+                    metadata[key] = value
+            
+            # Create document
+            doc = Document(
+                page_content=chunk,
+                metadata=metadata
+            )
+            documents.append(doc)
+        
+        logger.debug(f"Created {len(documents)} chunks for coupon {coupon_data.get('coupon_id')}")
+        return documents
+    
+    def chunk_coupons_batch(self,
+                          coupons_df,
+                          normalizer) -> List[Document]:
+        """
+        Chunk multiple coupons in batch
+        
+        Args:
+            coupons_df: DataFrame with coupon data
+            normalizer: CouponDataNormalizer instance
+            
+        Returns:
+            List of Document objects
+        """
+        all_documents = []
+        
+        for idx, coupon in coupons_df.iterrows():
+            coupon_id = int(coupon["coupon_id"])
+            
+            # Create semantic text
+            semantic_text = normalizer.create_semantic_text(coupon)
+            
+            if not semantic_text or not semantic_text.strip():
+                logger.warning(f"Coupon {coupon_id} has no semantic_text, skipping")
+                continue
+            
+            # Create coupon data dict
+            coupon_data = {
+                "coupon_id": coupon_id,
+                "coupon_name": str(coupon.get("coupon_name", "")),
+                "coupon_name_code": str(coupon.get("coupon_name_code", "")),
+                "coupon_desc": str(coupon.get("coupon_desc", "")),
+                "coupon_price_sale": float(coupon.get("coupon_price_sale", 0)) if pd.notna(coupon.get("coupon_price_sale")) else None,
+                "coupon_qty_code": int(coupon.get("coupon_qty_code", 0)) if pd.notna(coupon.get("coupon_qty_code")) else None,
+                "coupon_start_date": str(coupon.get("coupon_start_date", "")) if pd.notna(coupon.get("coupon_start_date")) else None,
+                "coupon_end_date": str(coupon.get("coupon_end_date", "")) if pd.notna(coupon.get("coupon_end_date")) else None,
+                "is_valid": normalizer._is_coupon_valid(coupon),
+                "location": normalizer._extract_location(coupon),
+                "target_audience": normalizer._extract_target_audience(coupon),
+                "discount_category": normalizer._categorize_discount(
+                    float(coupon.get("coupon_price_sale", 0))
+                ) if pd.notna(coupon.get("coupon_price_sale")) else "",
+                "normalized_name": normalizer.normalize_text(coupon.get("coupon_name", "")),
+            }
+            
+            # Chunk coupon document
+            chunks = self.chunk_coupon_document(coupon_data, semantic_text)
+            all_documents.extend(chunks)
+        
+        logger.info(f"Created {len(all_documents)} chunks from {len(coupons_df)} coupons")
         return all_documents
 
 

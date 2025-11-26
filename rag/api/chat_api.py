@@ -33,6 +33,46 @@ CORS(app)
 rag_system: Optional[SimpleRAGSystem] = None
 
 
+def check_coupons_indexed(rag_system: SimpleRAGSystem) -> bool:
+    """Check if coupons are already indexed in the collection"""
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        
+        client = QdrantClient(url=rag_system.qdrant_url)
+        
+        # Check if collection exists
+        collections = client.get_collections()
+        collection_names = [col.name for col in collections.collections]
+        
+        if rag_system.collection_name not in collection_names:
+            return False
+        
+        # Search for documents with document_type="coupon"
+        # In Qdrant, metadata is stored directly, not nested under "metadata"
+        filter_condition = Filter(
+            must=[
+                FieldCondition(
+                    key="document_type",
+                    match=MatchValue(value="coupon")
+                )
+            ]
+        )
+        
+        # Try to get at least one coupon document
+        results = client.scroll(
+            collection_name=rag_system.collection_name,
+            scroll_filter=filter_condition,
+            limit=1
+        )
+        
+        return len(results[0]) > 0
+    except Exception as e:
+        logger.warning(f"Could not check if coupons are indexed: {e}")
+        # If check fails, assume not indexed to be safe (will try to index)
+        return False
+
+
 def initialize_rag_system():
     """Initialize RAG system"""
     global rag_system
@@ -51,6 +91,9 @@ def initialize_rag_system():
     llm_provider = os.environ.get('LLM_PROVIDER', 'ollama')  # 'ollama' or 'lm_studio'
     lm_studio_url = os.environ.get('LM_STUDIO_URL', None)  # e.g., 'http://192.168.10.42:1234'
     
+    # Auto-index coupons on startup (can be disabled via env var)
+    auto_index_coupons = os.environ.get('AUTO_INDEX_COUPONS', 'true').lower() == 'true'
+    
     rag_system = SimpleRAGSystem(
         ollama_url=ollama_url,
         qdrant_url=qdrant_url,
@@ -65,6 +108,28 @@ def initialize_rag_system():
     try:
         rag_system.load_vectorstore()
         logger.info("✅ Loaded existing vectorstore")
+        
+        # Auto-index coupons if enabled and not already indexed
+        if auto_index_coupons:
+            try:
+                coupons_indexed = check_coupons_indexed(rag_system)
+                if not coupons_indexed:
+                    logger.info("🔄 Coupons not found in collection, auto-indexing coupons...")
+                    rag_system.index_coupons_from_database(
+                        use_chunking=True,
+                        incremental=False,  # Don't recreate, just add
+                        recreate_collection=False,
+                        valid_only=True  # Only index valid coupons
+                    )
+                    logger.info("✅ Coupons auto-indexed successfully")
+                else:
+                    logger.info("✅ Coupons already indexed in collection")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not auto-index coupons: {e}")
+                logger.info("You can manually index coupons later using index_coupons_from_database()")
+        else:
+            logger.info("ℹ️  Auto-index coupons is disabled (set AUTO_INDEX_COUPONS=true to enable)")
+            
     except Exception as e:
         logger.error(f"❌ Error loading vectorstore: {e}")
         logger.info("Please run index_hotels() first or set up the collection")
