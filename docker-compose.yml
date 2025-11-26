@@ -1,0 +1,169 @@
+version: '3.8'
+
+services:
+  # ==================== Vector Database - Qdrant ====================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_unified
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_storage:/qdrant/storage
+      - ./rag/qdrant_config:/qdrant/config  # Optional: custom config
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__HOST=0.0.0.0
+      - QDRANT__LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - unified_network
+
+  # ==================== Ollama - LLM & Embeddings ====================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_unified
+    ports:
+      - "11434:11434"  # Ollama API
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - unified_network
+
+  # ==================== Redis - Caching ====================
+  redis:
+    image: redis:7-alpine
+    container_name: redis_unified
+    ports:
+      - "6380:6379"  # Changed external port to avoid conflict
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - unified_network
+
+  # ==================== MySQL Database ====================
+  mysql:
+    image: mysql:8.0
+    container_name: mysql_unified
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./rag/myhotel.sql:/docker-entrypoint-initdb.d/myhotel.sql  # Auto-import SQL
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=myhotel
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - unified_network
+
+  # ==================== phpMyAdmin - Database Management ====================
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: phpmyadmin_unified
+    ports:
+      - "8181:80"
+    environment:
+      - PMA_HOST=mysql
+      - PMA_PORT=3306
+      - PMA_USER=root
+      - PMA_PASSWORD=root
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - unified_network
+
+  # ==================== Unified API Service (RAG + Recommendation) ====================
+  # Uncomment below to run API in Docker
+  # unified_api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.unified
+  #   container_name: unified_api
+  #   ports:
+  #     - "5000:5000"
+  #   volumes:
+  #     - ./datasets_extracted:/app/datasets_extracted
+  #     - ./rag:/app/rag
+  #     - ./recommendation:/app/recommendation
+  #     - ./processed:/app/processed
+  #   environment:
+  #     - QDRANT_URL=http://qdrant:6333
+  #     - OLLAMA_URL=http://ollama:11434
+  #     - REDIS_URL=redis://redis:6379
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=root
+  #     - MYSQL_PASSWORD=root
+  #     - MYSQL_DATABASE=myhotel
+  #     - PORT=5000
+  #     - DEBUG=False
+  #     - EMBEDDING_MODEL=bge-m3
+  #     - LLM_MODEL=qwen3
+  #     - COLLECTION_NAME=hotels
+  #     - LLM_PROVIDER=ollama
+  #     - AUTO_INDEX_COUPONS=true
+  #   depends_on:
+  #     qdrant:
+  #       condition: service_healthy
+  #     mysql:
+  #       condition: service_healthy
+  #     ollama:
+  #       condition: service_started
+  #     redis:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - unified_network
+
+volumes:
+  qdrant_storage:
+    driver: local
+    name: qdrant_unified_storage
+  ollama_data:
+    driver: local
+    name: ollama_unified_data
+  redis_data:
+    driver: local
+    name: redis_unified_data
+  mysql_data:
+    driver: local
+    name: mysql_unified_data
+
+networks:
+  unified_network:
+    driver: bridge
+    name: unified_network
+

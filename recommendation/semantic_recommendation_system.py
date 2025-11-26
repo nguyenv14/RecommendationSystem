@@ -641,7 +641,7 @@ def main():
     
     # Load data
     logger.info("Loading hotel data...")
-    hotels_df = pd.read_csv('datasets_extracted/tbl_hotel.csv')
+    hotels_df = pd.read_csv('../datasets_extracted/tbl_hotel.csv')
     logger.info(f"Loaded {len(hotels_df)} hotels")
     
     # Initialize system with BGE-M3 via Ollama
