@@ -3,7 +3,7 @@ Recommender Service
 Unified recommendation logic
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 import pandas as pd
 import numpy as np
 from .embeddings import EmbeddingService

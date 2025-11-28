@@ -364,3 +364,4 @@ curl http://localhost:6333/collections
 **Status**: ✅ Fully Integrated  
 **Database**: MySQL → Qdrant via ETL
 
+

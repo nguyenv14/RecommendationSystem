@@ -51,6 +51,21 @@ REM Set environment
 set QDRANT_URL=http://localhost:6333
 set OLLAMA_URL=http://localhost:11434
 set PORT=5000
+set AUTO_INDEX_DATA=false
+
+echo.
+echo ==========================================
+echo Setup Collections
+echo ==========================================
+echo.
+
+REM Run setup
+python setup_collections.py
+if %errorlevel% neq 0 (
+    echo [ERROR] Setup failed!
+    pause
+    exit /b 1
+)
 
 echo.
 echo ==========================================

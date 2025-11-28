@@ -8,6 +8,7 @@ python-dotenv==1.0.0
 # ==================== Database ====================
 pymysql==1.1.0
 sqlalchemy==2.0.23
+cryptography>=41.0.0
 
 # ==================== Data Processing ====================
 pandas==2.1.4
@@ -23,10 +24,10 @@ langchain-core==0.1.10
 openai>=1.0.0
 
 # ==================== Vector Database ====================
-qdrant-client==1.7.0
+qdrant-client>=1.7.3
 
 # ==================== Embeddings & Models ====================
-sentence-transformers==2.2.2
+sentence-transformers>=2.6.0
 transformers==4.36.2
 torch>=2.0.0
 

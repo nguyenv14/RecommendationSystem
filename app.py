@@ -51,6 +51,59 @@ embedding_service = None
 vectorstore_service = None
 
 
+def ensure_collections_ready():
+    """
+    Chỉ đảm bảo collections đã tạo (KHÔNG tự động index data)
+    """
+    logger.info("=" * 80)
+    logger.info("🔧 Checking Collections")
+    logger.info("=" * 80)
+    
+    from qdrant_client.models import Distance, VectorParams
+    
+    try:
+        # Khởi tạo VectorStore để check
+        temp_vectorstore = VectorStoreService(url=settings.QDRANT_URL)
+        client = temp_vectorstore.client
+        
+        # Danh sách collections cần thiết
+        required_collections = [
+            (Collections.RAG_HOTELS, "RAG Hotels (Chatbot)", 1024, "🏨"),
+            (Collections.RAG_COUPONS, "RAG Coupons (Chatbot)", 1024, "🎟️"),
+            (Collections.RECOMMENDATION_HOTELS, "Recommendation (Similar Hotels)", 384, "🎯"),
+        ]
+        
+        # Lấy danh sách collections hiện có
+        existing_collections = client.get_collections()
+        existing_names = [col.name for col in existing_collections.collections]
+        
+        # Tạo collections nếu chưa có
+        for collection_name, description, vector_size, emoji in required_collections:
+            if collection_name not in existing_names:
+                logger.info(f"Creating {emoji} {description} ({collection_name})...")
+                client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,  # RAG: 1024 (bge-m3), Recommendation: 384 (MiniLM)
+                        distance=Distance.COSINE
+                    )
+                )
+                logger.info(f"✅ Created {collection_name}")
+            else:
+                info = client.get_collection(collection_name)
+                logger.info(f"✅ {emoji} {collection_name}: {info.points_count} points")
+        
+        logger.info("")
+        logger.info("💡 To index data:")
+        logger.info("   RAG: Use scripts in rag/ folder")
+        logger.info("   Recommendation: Use scripts in recommendation/ folder")
+        logger.info("=" * 80)
+        
+    except Exception as e:
+        logger.error(f"❌ Error checking collections: {e}")
+        raise
+
+
 def initialize_services():
     """Initialize all services"""
     global rag_service, recommender_service, embedding_service, vectorstore_service
@@ -58,7 +111,10 @@ def initialize_services():
     logger.info("🚀 Initializing services...")
     
     try:
-        # Initialize shared services
+        # Bước 1: Đảm bảo collections đã sẵn sàng
+        ensure_collections_ready()
+        
+        # Bước 2: Initialize shared services
         embedding_service = EmbeddingService(
             provider="ollama",
             model_name=settings.EMBEDDING_MODEL,
@@ -70,14 +126,14 @@ def initialize_services():
             url=settings.QDRANT_URL
         )
         
-        # Initialize RAG service
+        # Bước 3: Initialize RAG service
         rag_service = RAGService(
             embedding_service=embedding_service,
             vectorstore_service=vectorstore_service,
             collection_name=settings.RAG_COLLECTION_HOTELS
         )
         
-        # Initialize Recommendation service
+        # Bước 4: Initialize Recommendation service
         retriever_service = RetrieverService(
             embedding_service=embedding_service,
             vectorstore_service=vectorstore_service,
@@ -92,30 +148,6 @@ def initialize_services():
         )
         
         logger.info("✅ All services initialized successfully")
-        
-        # Auto-sync data from database if enabled
-        auto_sync = os.getenv('AUTO_SYNC_DATABASE', 'false').lower() == 'true'
-        if auto_sync:
-            try:
-                from src.data import DatabaseConnector, DataProcessor
-                
-                logger.info("🔄 Auto-syncing data from database...")
-                
-                db = DatabaseConnector()
-                if db.test_connection():
-                    processor = DataProcessor(
-                        db_connector=db,
-                        rag_service=rag_service
-                    )
-                    processor.auto_sync(
-                        sync_hotels=True,
-                        sync_coupons=True,
-                        incremental=True
-                    )
-                else:
-                    logger.warning("⚠️  Database connection failed, skipping auto-sync")
-            except Exception as e:
-                logger.warning(f"⚠️  Auto-sync failed: {e}")
         
     except Exception as e:
         logger.error(f"❌ Error initializing services: {e}")

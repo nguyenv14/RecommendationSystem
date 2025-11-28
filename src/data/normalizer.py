@@ -241,3 +241,4 @@ class HotelDataNormalizer:
         logger.info(f"✅ Normalized {len(df)} coupons")
         return df
 
+

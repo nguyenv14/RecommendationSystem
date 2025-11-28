@@ -27,25 +27,25 @@ services:
       - unified_network
 
   # ==================== Ollama - LLM & Embeddings ====================
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama_unified
-    ports:
-      - "11434:11434"  # Ollama API
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    networks:
-      - unified_network
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama_unified
+  #   ports:
+  #     - "11434:11434"  # Ollama API
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   networks:
+  #     - unified_network
 
   # ==================== Redis - Caching ====================
   redis:

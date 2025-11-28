@@ -3,7 +3,7 @@ Retriever Service
 Unified retrieval logic cho cả RAG và Recommendation
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from .embeddings import EmbeddingService
 from .vectorstore import VectorStoreService

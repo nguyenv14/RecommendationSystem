@@ -173,8 +173,8 @@ class DatabaseConnector:
         query = "SELECT * FROM tbl_coupon WHERE 1=1"
         
         if valid_only:
-            query += " AND coupon_status = 1"
-            query += " AND (coupon_enddate IS NULL OR coupon_enddate >= NOW())"
+            # Filter by end date only (coupon_status column doesn't exist)
+            query += " AND (coupon_end_date IS NULL OR coupon_end_date >= NOW())"
         
         try:
             df = pd.read_sql(text(query), self.engine)
@@ -278,4 +278,5 @@ class DatabaseConnector:
         if self.engine:
             self.engine.dispose()
             logger.info("Database connection closed")
+
 

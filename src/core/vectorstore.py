@@ -3,7 +3,7 @@ VectorStore Service
 Unified Qdrant operations cho cả RAG và Recommendation
 """
 
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
