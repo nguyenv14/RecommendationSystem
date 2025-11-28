@@ -1,13 +1,13 @@
 """
 Embedding Manager
 Centralized embedding management with caching
+Uses Ollama for embeddings (no PyTorch required)
 """
 
 import hashlib
 from typing import List, Union, Optional, Dict
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_core.embeddings import Embeddings
-from sentence_transformers import SentenceTransformer
 import requests
 from .logger import get_logger
 
@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 class EmbeddingManager:
     """
     Centralized embedding manager with caching
-    Supports both Ollama and local SentenceTransformers
+    Uses Ollama for embeddings (no PyTorch required)
     """
     
     def __init__(
@@ -26,23 +26,27 @@ class EmbeddingManager:
         model_name: str = "bge-m3",
         ollama_url: str = "http://localhost:11434",
         cache_enabled: bool = True,
-        device: str = "cpu"
+        device: str = "cpu"  # Not used, kept for compatibility
     ):
         """
         Initialize embedding manager
         
         Args:
-            provider: 'ollama' or 'sentence_transformers'
-            model_name: Model name
+            provider: 'ollama' (only supported provider, no PyTorch needed)
+            model_name: Ollama model name (e.g., 'bge-m3')
             ollama_url: Ollama server URL
             cache_enabled: Enable caching
-            device: Device for local models ('cpu' or 'cuda')
+            device: Not used (kept for compatibility)
         """
-        self.provider = provider
+        if provider != "ollama":
+            logger.warning(f"Provider '{provider}' not supported. Using 'ollama' instead.")
+            provider = "ollama"
+        
+        self.provider = "ollama"  # Force ollama
         self.model_name = model_name
         self.ollama_url = ollama_url
         self.cache_enabled = cache_enabled
-        self.device = device
+        self.device = device  # Not used but kept for compatibility
         
         # Cache
         self._cache: Dict[str, List[float]] = {}
@@ -50,31 +54,19 @@ class EmbeddingManager:
         # Initialize model
         self._init_model()
         
-        logger.info(f"Initialized EmbeddingManager: {provider} - {model_name}")
+        logger.info(f"Initialized EmbeddingManager: ollama - {model_name}")
     
     def _init_model(self):
-        """Initialize embedding model"""
-        if self.provider == "ollama":
-            try:
-                self.model = OllamaEmbeddings(
-                    model=self.model_name,
-                    base_url=self.ollama_url
-                )
-                logger.info(f"✅ Ollama embeddings initialized: {self.model_name}")
-            except Exception as e:
-                logger.error(f"Error initializing Ollama embeddings: {e}")
-                raise
-        
-        elif self.provider == "sentence_transformers":
-            try:
-                self.model = SentenceTransformer(self.model_name, device=self.device)
-                logger.info(f"✅ SentenceTransformer initialized: {self.model_name}")
-            except Exception as e:
-                logger.error(f"Error initializing SentenceTransformer: {e}")
-                raise
-        
-        else:
-            raise ValueError(f"Unknown provider: {self.provider}")
+        """Initialize embedding model (Ollama only)"""
+        try:
+            self.model = OllamaEmbeddings(
+                model=self.model_name,
+                base_url=self.ollama_url
+            )
+            logger.info(f"✅ Ollama embeddings initialized: {self.model_name}")
+        except Exception as e:
+            logger.error(f"Error initializing Ollama embeddings: {e}")
+            raise
     
     def _get_cache_key(self, text: str) -> str:
         """Get cache key for text"""
@@ -97,12 +89,8 @@ class EmbeddingManager:
                 return self._cache[cache_key]
         
         try:
-            if self.provider == "ollama":
-                embedding = self.model.embed_query(text)
-            elif self.provider == "sentence_transformers":
-                embedding = self.model.encode(text, convert_to_tensor=False).tolist()
-            else:
-                raise ValueError(f"Unknown provider: {self.provider}")
+            # Only Ollama is supported
+            embedding = self.model.embed_query(text)
             
             if self.cache_enabled:
                 cache_key = self._get_cache_key(text)

@@ -1,13 +1,12 @@
 """
 Embedding Service
 Unified embedding service cho cả RAG và Recommendation
+Uses Ollama for embeddings (no PyTorch required)
 """
 
 from typing import List, Union, Optional
 import hashlib
 from langchain_community.embeddings import OllamaEmbeddings
-from sentence_transformers import SentenceTransformer
-import torch
 import requests
 from ..shared import get_logger
 
@@ -17,7 +16,7 @@ logger = get_logger(__name__)
 class EmbeddingService:
     """
     Unified embedding service
-    Supports: Ollama, SentenceTransformers, Ollama API direct
+    Uses Ollama for embeddings (no PyTorch required)
     Used by both RAG and Recommendation systems
     """
     
@@ -26,28 +25,29 @@ class EmbeddingService:
         provider: str = "ollama",
         model_name: str = "bge-m3",
         ollama_url: str = "http://localhost:11434",
-        device: str = None,
+        device: str = None,  # Not used, kept for compatibility
         cache_enabled: bool = True
     ):
         """
         Initialize embedding service
         
         Args:
-            provider: 'ollama', 'sentence_transformers', or 'ollama_direct'
-            model_name: Model name
+            provider: 'ollama' or 'ollama_direct' (only supported providers, no PyTorch needed)
+            model_name: Ollama model name (e.g., 'bge-m3')
             ollama_url: Ollama server URL
-            device: 'cuda', 'cpu', or None (auto-detect)
+            device: Not used (kept for compatibility)
             cache_enabled: Enable caching
         """
+        # Force ollama if other provider specified
+        if provider not in ["ollama", "ollama_direct"]:
+            logger.warning(f"Provider '{provider}' not supported. Using 'ollama' instead.")
+            provider = "ollama"
+        
         self.provider = provider
         self.model_name = model_name
         self.ollama_url = ollama_url
         self.cache_enabled = cache_enabled
-        
-        # Auto-detect device
-        if device is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.device = device
+        self.device = device  # Not used but kept for compatibility
         
         # Cache
         self._cache = {}
@@ -55,10 +55,10 @@ class EmbeddingService:
         # Initialize model
         self._init_model()
         
-        logger.info(f"✅ EmbeddingService initialized: {provider}/{model_name} on {device}")
+        logger.info(f"✅ EmbeddingService initialized: {provider}/{model_name}")
     
     def _init_model(self):
-        """Initialize embedding model based on provider"""
+        """Initialize embedding model (Ollama only)"""
         if self.provider == "ollama":
             self.model = OllamaEmbeddings(
                 model=self.model_name,
@@ -66,17 +66,13 @@ class EmbeddingService:
             )
             logger.info(f"Using Ollama embeddings: {self.model_name}")
             
-        elif self.provider == "sentence_transformers":
-            self.model = SentenceTransformer(self.model_name, device=self.device)
-            logger.info(f"Using SentenceTransformer: {self.model_name}")
-            
         elif self.provider == "ollama_direct":
             # Direct API call (for compatibility with old code)
             self.model = None
             logger.info(f"Using Ollama direct API: {self.model_name}")
             
         else:
-            raise ValueError(f"Unknown provider: {self.provider}")
+            raise ValueError(f"Unknown provider: {self.provider}. Only 'ollama' and 'ollama_direct' are supported.")
     
     def _get_cache_key(self, text: str) -> str:
         """Generate cache key from text"""
@@ -116,9 +112,6 @@ class EmbeddingService:
         try:
             if self.provider == "ollama":
                 embedding = self.model.embed_query(text)
-                
-            elif self.provider == "sentence_transformers":
-                embedding = self.model.encode(text, convert_to_tensor=False).tolist()
                 
             elif self.provider == "ollama_direct":
                 embedding = self._embed_ollama_direct(text)

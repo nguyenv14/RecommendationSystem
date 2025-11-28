@@ -183,6 +183,8 @@ class VectorStoreService:
             raise ValueError("No collection specified and no default collection set")
         
         try:
+            # Use search() method directly (standard API for qdrant-client)
+            # This matches how other files in the codebase use it (rag/core/retriever.py, rag/simple_rag_system.py)
             results = self.client.search(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -196,8 +198,17 @@ class VectorStoreService:
             logger.debug(f"Search returned {len(results)} results from {collection_name}")
             return results
             
+        except AttributeError as e:
+            logger.error(f"Attribute error searching in {collection_name}: {e}")
+            logger.error(f"Client type: {type(self.client)}, Client: {self.client}")
+            # Log available methods for debugging
+            available_methods = [m for m in dir(self.client) if not m.startswith('_') and callable(getattr(self.client, m, None))]
+            logger.error(f"Available QdrantClient methods: {available_methods[:20]}")
+            return []
         except Exception as e:
             logger.error(f"Error searching in {collection_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     def search_by_text(

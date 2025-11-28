@@ -25,7 +25,7 @@ class GeneratorService:
         model_name: str = "qwen3",
         ollama_url: str = "http://localhost:11434",
         lm_studio_url: Optional[str] = None,
-        temperature: float = 0.1
+        temperature: float = 0.3  # Theo RAG_FLOW_EXPLANATION.md: temperature=0.3
     ):
         """
         Initialize generator service
@@ -35,7 +35,7 @@ class GeneratorService:
             model_name: Model name
             ollama_url: Ollama URL
             lm_studio_url: LM Studio URL
-            temperature: Generation temperature
+            temperature: Generation temperature (default: 0.3 theo RAG_FLOW_EXPLANATION.md)
         """
         self.provider = provider
         self.model_name = model_name
@@ -46,22 +46,40 @@ class GeneratorService:
             self.llm = Ollama(
                 model=model_name,
                 base_url=ollama_url,
-                temperature=temperature
+                temperature=temperature  # 0.3 theo RAG_FLOW_EXPLANATION.md
             )
-            logger.info(f"Using Ollama LLM: {model_name}")
+            logger.info(f"Using Ollama LLM: {model_name} (temperature={temperature})")
             
         elif provider == "lm_studio":
-            self.llm = ChatOpenAI(
-                model=model_name,
-                openai_api_base=f"{lm_studio_url}/v1",
-                temperature=temperature
-            )
-            logger.info(f"Using LM Studio LLM: {model_name}")
+            # LM Studio uses OpenAI-compatible API but doesn't need real API key
+            # Theo RAG_FLOW_EXPLANATION.md: max_tokens=2048, temperature=0.3
+            try:
+                self.llm = ChatOpenAI(
+                    model=model_name,
+                    openai_api_base=f"{lm_studio_url}/v1",
+                    openai_api_key="lm-studio",  # Dummy key for LM Studio
+                    temperature=temperature,  # 0.3 theo RAG_FLOW_EXPLANATION.md
+                    max_tokens=2048,  # Theo RAG_FLOW_EXPLANATION.md: max_tokens=2048
+                    timeout=120.0
+                )
+                logger.info(f"Using LM Studio LLM: {model_name} (temperature={temperature}, max_tokens=2048)")
+            except Exception as e:
+                # Fallback: try with base_url (newer API)
+                logger.warning(f"Trying base_url instead of openai_api_base...")
+                self.llm = ChatOpenAI(
+                    model=model_name,
+                    base_url=f"{lm_studio_url}/v1",
+                    api_key="lm-studio",  # Dummy key for LM Studio
+                    temperature=temperature,  # 0.3 theo RAG_FLOW_EXPLANATION.md
+                    max_tokens=2048,  # Theo RAG_FLOW_EXPLANATION.md: max_tokens=2048
+                    timeout=120.0
+                )
+                logger.info(f"Using LM Studio LLM (base_url): {model_name} (temperature={temperature}, max_tokens=2048)")
             
         else:
             raise ValueError(f"Unknown provider: {provider}")
         
-        logger.info(f"✅ GeneratorService initialized: {provider}/{model_name}")
+        logger.info(f"✅ GeneratorService initialized: {provider}/{model_name} (temperature={temperature}, max_tokens=2048)")
     
     def generate(
         self,
