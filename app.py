@@ -165,10 +165,42 @@ def index():
 @app.route('/health')
 @app.route('/api/health')
 def health():
-    """Health check"""
+    """
+    Health check
+    Compatible với frontend chat.js (expects rag_initialized & qdrant_connected)
+    """
+    # RAG service initialized (based on service + collection having data)
+    rag_initialized = rag_service is not None
+
+    # Qdrant connection & collection status
+    qdrant_connected = False
+    try:
+        if vectorstore_service is not None:
+            # Thử gọi get_collections() để kiểm tra kết nối
+            collections = vectorstore_service.client.get_collections()  # type: ignore[attr-defined]
+            _ = len(collections.collections)
+            qdrant_connected = True
+    except Exception:
+        qdrant_connected = False
+
+    # Nếu RAG service và Qdrant đều OK, cố gắng kiểm tra collection points
+    if rag_initialized and qdrant_connected:
+        try:
+            info = vectorstore_service.get_collection_info(settings.RAG_COLLECTION_HOTELS)  # type: ignore[arg-type]
+            if info and getattr(info, "points_count", 0) == 0:
+                # Collection tồn tại nhưng chưa có dữ liệu
+                rag_initialized = False
+        except Exception:
+            # Nếu check fail thì giữ nguyên rag_initialized
+            pass
+
+    status = 'ok' if rag_initialized and qdrant_connected else 'error'
+
     return jsonify({
-        'status': 'ok',
+        'status': status,
         'version': '3.0',
+        'rag_initialized': rag_initialized,
+        'qdrant_connected': qdrant_connected,
         'services': {
             'rag': rag_service is not None,
             'recommendation': recommender_service is not None,

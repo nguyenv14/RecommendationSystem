@@ -184,59 +184,56 @@ Trả lời:"""
     ) -> Dict[str, Any]:
         """
         Ask a question and get answer (main RAG flow)
-        Sử dụng LangChain RetrievalQA chain giống simple_rag_system.py
+        Theo RAG_FLOW_EXPLANATION.md:
+        Flow: Query → Embedding → Vector Search (k=5) → Combine Context → Build Prompt → LLM Generation → Parse Response
         
         Args:
             question: User question
-            top_k: Number of documents to retrieve (ignored, uses k=5 from retriever)
-            filters: Optional filters (not used in RetrievalQA chain, kept for compatibility)
-            prompt_template: Optional custom prompt (not used, kept for compatibility)
+            top_k: Number of documents to retrieve (default: 5 theo RAG_FLOW_EXPLANATION.md)
+            filters: Optional filters for retrieval
+            prompt_template: Optional custom prompt template
             
         Returns:
             Dict with question, answer, sources
         """
         logger.info(f"RAG question: '{question[:50]}...'")
         
-        if self.qa_chain is None:
-            logger.error("QA chain not initialized. Please ensure collection exists and documents are indexed.")
-            return {
-                "question": question,
-                "answer": "Xin lỗi, hệ thống chưa được khởi tạo. Vui lòng thử lại sau.",
-                "sources": [],
-                "num_sources": 0
-            }
-        
+        # Use unified RetrieverService + GeneratorService instead of LangChain RetrievalQA
         try:
-            # Use RetrievalQA chain (giống simple_rag_system.py)
-            # Flow: Query → Embedding → Vector Search (k=5) → Combine Context → Build Prompt → LLM Generation
-            result = self.qa_chain({"query": question})
+            # Step 1-2: Generate Query Embedding + Vector Search (Retriever) → Top 5 documents
+            # Theo RAG_FLOW_EXPLANATION.md: k=5 documents
+            if top_k is None:
+                top_k = 5  # Default k=5 theo RAG_FLOW_EXPLANATION.md
             
-            # Format response (giống simple_rag_system.py)
-            response = {
-                "question": question,
-                "answer": result["result"],  # LLM generated answer
-                "sources": []
-            }
+            documents = self.retriever_service.retrieve(
+                query=question,
+                collection_name=self.collection_name,
+                top_k=top_k,
+                filters=filters
+            )
             
-            # Extract source documents
-            for doc in result.get("source_documents", []):
-                # Handle case where page_content might be None
-                page_content = doc.page_content if doc.page_content else ""
-                if not page_content:
-                    # Try to get from metadata if not in page_content
-                    page_content = doc.metadata.get("page_content") or doc.metadata.get("content") or doc.metadata.get("text") or ""
-                
-                response["sources"].append({
-                    "hotel_id": doc.metadata.get("hotel_id"),
-                    "hotel_name": doc.metadata.get("hotel_name", ""),
-                    "hotel_rank": doc.metadata.get("hotel_rank"),
-                    "hotel_price_average": doc.metadata.get("hotel_price_average"),
-                    "area_name": doc.metadata.get("area_name", ""),
-                    "text_preview": page_content[:300] + "..." if len(page_content) > 300 else page_content
-                })
+            if not documents:
+                logger.warning("No documents retrieved for question")
+                return {
+                    "question": question,
+                    "answer": "Xin lỗi, tôi không tìm thấy thông tin phù hợp trong hệ thống cho câu hỏi này.",
+                    "sources": [],
+                    "num_sources": 0
+                }
             
-            logger.info(f"✅ RAG answer generated (sources: {len(response['sources'])})")
-            return response
+            logger.info(f"Retrieved {len(documents)} documents (expected: {top_k})")
+            
+            # Step 3-4: Combine Context từ documents + Build Prompt với Context + Question
+            # Step 5-6: LLM Generation (max_tokens: 2048, temperature: 0.3) + Parse Response + Extract Sources
+            # Theo RAG_FLOW_EXPLANATION.md: GeneratorService handles context building, prompt building, LLM generation
+            result = self.generator.generate_from_documents(
+                query=question,
+                documents=documents,
+                prompt_template=prompt_template
+            )
+            
+            logger.info(f"✅ RAG answer generated (sources: {len(result.get('sources', []))})")
+            return result
             
         except Exception as e:
             logger.error(f"Error in RAG flow: {e}")
@@ -244,7 +241,7 @@ Trả lời:"""
             logger.error(traceback.format_exc())
             return {
                 "question": question,
-                "answer": f"Xin lỗi, đã xảy ra lỗi: {str(e)}",
+                "answer": f"Xin lỗi, đã xảy ra lỗi khi xử lý câu hỏi: {str(e)}",
                 "sources": [],
                 "num_sources": 0
             }

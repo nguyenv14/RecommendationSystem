@@ -157,12 +157,14 @@ class GeneratorService:
     def _build_context(self, documents: List[Dict[str, Any]]) -> str:
         """
         Build context string from documents
+        Theo RAG_FLOW_EXPLANATION.md: Combine 5 documents thành context string
+        Format: Mỗi document là 1 chunk của hotel data, combine lại
         
         Args:
-            documents: List of documents
+            documents: List of documents (expected: 5 documents theo RAG_FLOW_EXPLANATION.md)
             
         Returns:
-            Context string
+            Context string (tổng context có thể ~4000-5000 characters với k=5, chunk_size=800)
         """
         context_parts = []
         
@@ -170,11 +172,16 @@ class GeneratorService:
             payload = doc.get("payload", {})
             
             # Try to extract meaningful text
-            text = self._extract_text(payload)
+            # Priority: page_content (from Qdrant) > semantic_text > other text fields
+            text = payload.get("page_content") or self._extract_text(payload)
             
             if text:
+                # Format: [Document N] + text content
+                # Theo RAG_FLOW_EXPLANATION.md: LangChain tự động combine doc1.page_content + doc2.page_content + ...
                 context_parts.append(f"[Document {i}]\n{text}")
         
+        # Combine tất cả documents thành 1 context string
+        # Theo RAG_FLOW_EXPLANATION.md: chain_type="stuff" combines all documents into 1 prompt
         return "\n\n".join(context_parts) if context_parts else "Không có thông tin."
     
     def _extract_text(self, payload: Dict[str, Any]) -> str:
@@ -200,21 +207,28 @@ class GeneratorService:
         return "\n".join(text_parts) if text_parts else ""
     
     def _extract_sources(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Extract source information from documents"""
+        """
+        Extract source information from documents
+        Theo RAG_FLOW_EXPLANATION.md: Extract sources từ top 5 documents
+        """
         sources = []
         
         for doc in documents:
             payload = doc.get("payload", {})
             score = doc.get("score", 0.0)
             
+            # Extract page_content for text_preview
+            page_content = payload.get("page_content") or self._extract_text(payload)
+            
             source = {
                 "id": doc.get("id"),
                 "score": score,
             }
             
-            # Add useful fields
+            # Add useful fields (theo RAG_FLOW_EXPLANATION.md format)
             useful_fields = [
-                'hotel_id', 'hotel_name', 'document_type',
+                'hotel_id', 'hotel_name', 'hotel_rank', 'hotel_price_average',
+                'area_name', 'document_type',
                 'coupon_id', 'coupon_code', 'source_system'
             ]
             
@@ -222,27 +236,50 @@ class GeneratorService:
                 if field in payload:
                     source[field] = payload[field]
             
+            # Add text_preview (theo RAG_FLOW_EXPLANATION.md: text_preview từ page_content)
+            if page_content:
+                source["text_preview"] = page_content[:300] + "..." if len(page_content) > 300 else page_content
+            
             sources.append(source)
         
         return sources
     
     def _get_default_prompt(self) -> str:
-        """Get default RAG prompt template"""
-        return """Bạn là trợ lý AI thông minh chuyên về khách sạn và du lịch tại Việt Nam.
+        """
+        Get default RAG prompt template
+        Theo RAG_FLOW_EXPLANATION.md: Prompt chi tiết, so sánh hotels
+        """
+        return """Bạn là trợ lý tư vấn khách sạn tại Đà Nẵng. Trả lời HOÀN TOÀN bằng tiếng Việt.
 
-Dựa trên thông tin sau đây, hãy trả lời câu hỏi của khách hàng một cách chính xác và hữu ích.
-
-Thông tin tham khảo:
+Thông tin khách sạn:
 {context}
 
 Câu hỏi: {question}
 
-Hướng dẫn:
-- Trả lời bằng tiếng Việt
-- Dựa trên thông tin được cung cấp
-- Nếu không có thông tin, hãy nói rõ
-- Trả lời ngắn gọn, rõ ràng, hữu ích
-- Có thể đề xuất thêm nếu phù hợp
+QUAN TRỌNG: 
+- CHỈ trả lời các câu hỏi liên quan đến khách sạn, nhà nghỉ, resort, homestay tại Đà Nẵng.
+- Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
+- Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
+
+QUY TẮC BẮT BUỘC VỀ TÊN KHÁCH SẠN - TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM:
+❌ NGHIÊM CẤM sử dụng tên thương hiệu (brand_name) như: "Meliá Hotels International", "Accor", "InterContinental Hotels Group"
+✅ BẮT BUỘC sử dụng TÊN KHÁCH SẠN CỤ THỂ từ trường "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU mỗi block trong context
+
+VÍ DỤ CÁCH TRẢ LỜI ĐÚNG VÀ SAI:
+✅ ĐÚNG: "Grand Tourane Hotel" (lấy từ "Tên khách sạn: Grand Tourane Hotel")
+✅ ĐÚNG: "Meliá Vinpearl Riverfront Đà Nẵng" (lấy từ "Tên khách sạn: Meliá Vinpearl Riverfront Đà Nẵng")
+✅ ĐÚNG: "Pullman Danang Beach Resort" (lấy từ "Tên khách sạn: Pullman Danang Beach Resort")
+❌ SAI: "Meliá Đà Nẵng – Xuân Thiều" (sai vì đây KHÔNG phải tên khách sạn trong database)
+❌ SAI: "Accor Hotel tại Đà Nẵng" (sai vì đây là brand, không phải tên khách sạn cụ thể)
+❌ SAI: "InterContinental Đà Nẵng" (sai nếu tên đầy đủ là "InterContinental Danang Sun Peninsula Resort")
+❌ SAI: "Meliá Hotels International" (sai vì đây là brand name, phải dùng tên khách sạn cụ thể)
+
+CÁCH XÁC ĐỊNH TÊN KHÁCH SẠN ĐÚNG (BẮT BUỘC):
+1. Tìm dòng "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU TIÊN trong mỗi block thông tin của context
+2. Sử dụng CHÍNH XÁC, NGUYÊN VĂN tên đó, KHÔNG RÚT GỌN, KHÔNG thay bằng brand name, KHÔNG tự bịa tên
+3. Dòng "Thương hiệu:" CHỈ để tham khảo nhóm khách sạn, TUYỆT ĐỐI KHÔNG dùng để đặt tên khách sạn trong câu trả lời
+
+Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. BẮT BUỘC nêu TÊN KHÁCH SẠN CỤ THỂ (lấy CHÍNH XÁC từ "Tên khách sạn:" trong context), giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
 
 Trả lời:"""
 
