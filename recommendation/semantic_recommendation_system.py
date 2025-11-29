@@ -2,13 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Semantic Recommendation System using Embeddings and Qdrant Vector DB
+Uses Ollama for embeddings (no PyTorch required)
 """
 
 import pandas as pd
 import numpy as np
-import torch
-from transformers import AutoModel, AutoTokenizer
-from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 import json
@@ -23,42 +21,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SemanticRecommendationSystem:
-    def __init__(self, model_name='paraphrase-multilingual-MiniLM-L12-v2', 
+    def __init__(self, model_name='bge-m3', 
                  device=None, qdrant_url='http://localhost:6333',
-                 use_ollama=False, ollama_url='http://localhost:11434'):
+                 use_ollama=True, ollama_url='http://localhost:11434'):
         """
         Initialize the Semantic Recommendation System
         
         Args:
-            model_name: SentenceTransformer model (default: multilingual)
-            device: 'cuda' for GPU, 'cpu' for CPU. Auto-detect if None
+            model_name: Ollama model name (default: 'bge-m3')
+            device: Not used (kept for compatibility)
             qdrant_url: Qdrant server URL
-            use_ollama: Use Ollama for embeddings (default: False)
+            use_ollama: Use Ollama for embeddings (default: True, only supported option)
             ollama_url: Ollama server URL
         """
-        self.use_ollama = use_ollama
-        self.ollama_url = ollama_url
-        
-        # Auto-detect device
-        if device is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        self.device = device
-        self.model_name = model_name
-        
-        logger.info(f"Loading model: {model_name}")
-        logger.info(f"Using device: {device}")
-        logger.info(f"Using Ollama: {use_ollama}")
-        
-        # Load embedding model
+        # Force Ollama (only supported option)
         if not use_ollama:
-            logger.info("Initializing SentenceTransformer model...")
-            self.model = SentenceTransformer(model_name, device=device)
-            self.is_bge = True
-            self.tokenizer = None
-            self.transformer_model = None
-        else:
-            self.model = None
+            logger.warning("Only Ollama is supported. Setting use_ollama=True")
+            use_ollama = True
+        
+        self.use_ollama = True  # Always True
+        self.ollama_url = ollama_url
+        self.model_name = model_name
+        self.device = device  # Not used but kept for compatibility
+        self.model = None  # Not used with Ollama
+        
+        logger.info(f"Initializing Semantic Recommendation System")
+        logger.info(f"Model: {model_name}")
+        logger.info(f"Using Ollama: {use_ollama}")
+        logger.info(f"Ollama URL: {ollama_url}")
             
         # Qdrant client
         self.qdrant_url = qdrant_url
@@ -131,7 +121,7 @@ class SemanticRecommendationSystem:
                 response = requests.post(
                     f"{self.ollama_url}/api/embeddings",
                     json={
-                        "model": "bge-m3",
+                        "model": self.model_name,  # Use configured model name
                         "prompt": text
                     },
                     timeout=60
@@ -161,31 +151,17 @@ class SemanticRecommendationSystem:
     
     def create_embeddings(self, texts: List[str], batch_size: int = 16) -> np.ndarray:
         """
-        Create embeddings for text
+        Create embeddings for text using Ollama
         
         Args:
             texts: List of texts to embed
-            batch_size: Batch size for processing (smaller for BGE-M3)
+            batch_size: Not used (kept for compatibility)
             
         Returns:
             Numpy array of embeddings
         """
-        logger.info(f"Creating embeddings for {len(texts)} texts...")
-        
-        if self.use_ollama:
-            logger.info("Using Ollama for embeddings...")
-            return self._create_embeddings_ollama(texts)
-        else:
-            # BGE-M3 specific settings
-            embeddings = self.model.encode(
-                texts, 
-                batch_size=batch_size, 
-                show_progress_bar=True,
-                normalize_embeddings=True,  # Normalize embeddings for better cosine similarity
-                convert_to_numpy=True
-            )
-            logger.info(f"Created embeddings shape: {embeddings.shape}")
-            return embeddings
+        logger.info(f"Creating embeddings for {len(texts)} texts using Ollama...")
+        return self._create_embeddings_ollama(texts)
     
     def create_qdrant_collection(self, vector_size: int = 1024, recreate: bool = False):
         """
@@ -522,11 +498,8 @@ class SemanticRecommendationSystem:
         Returns:
             List of similar hotels with similarity scores
         """
-        # Create embedding for query
-        if self.use_ollama:
-            query_embedding = self._create_embeddings_ollama([query_text])[0]
-        else:
-            query_embedding = self.model.encode([query_text])[0]
+        # Create embedding for query using Ollama
+        query_embedding = self._create_embeddings_ollama([query_text])[0]
         
         # Search in Qdrant
         results = self.client.search(
@@ -641,7 +614,7 @@ def main():
     
     # Load data
     logger.info("Loading hotel data...")
-    hotels_df = pd.read_csv('datasets_extracted/tbl_hotel.csv')
+    hotels_df = pd.read_csv('../datasets_extracted/tbl_hotel.csv')
     logger.info(f"Loaded {len(hotels_df)} hotels")
     
     # Initialize system with BGE-M3 via Ollama

@@ -5,8 +5,15 @@ Simple RAG System cho Hotel Recommendation
 Sử dụng LangChain + Ollama + Qdrant
 """
 
-import pandas as pd
+# CRITICAL: Set environment variables BEFORE any imports to prevent PyTorch loading
+# This must be done before importing pandas, langchain, or any other libraries
 import os
+os.environ['TRANSFORMERS_OFFLINE'] = '1'
+os.environ['HF_HUB_OFFLINE'] = '1'
+os.environ['TORCH_DISABLE_IMPORT'] = '1'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+import pandas as pd
 import json
 import hashlib
 from typing import List, Dict, Optional
@@ -124,7 +131,7 @@ class SimpleRAGSystem:
                  ollama_url="http://localhost:11434",
                  qdrant_url="http://localhost:6333",
                  embedding_model="bge-m3",
-                 llm_model="google/gemma-3n-e4b",
+                 llm_model="qwen3",
                  collection_name="hotels",
                  llm_provider="ollama",
                  lm_studio_url=None):

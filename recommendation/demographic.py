@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 def load_and_prepare_data():
     # Đọc các file CSV (xử lý lỗi định dạng)
     try:
-        df_eval = pd.read_csv('datasets_extracted/tbl_evaluate.csv', on_bad_lines='skip')
-        df_orders = pd.read_csv('datasets_extracted/tbl_order.csv', on_bad_lines='skip') 
-        df_rooms = pd.read_csv('datasets_extracted/tbl_room.csv', on_bad_lines='skip')
-        df_hotels = pd.read_csv('datasets_extracted/tbl_hotel.csv', on_bad_lines='skip')
-        df_order_details = pd.read_csv('datasets_extracted/tbl_order_details.csv', on_bad_lines='skip')
+        df_eval = pd.read_csv('../datasets_extracted/tbl_evaluate.csv', on_bad_lines='skip')
+        df_orders = pd.read_csv('../datasets_extracted/tbl_order.csv', on_bad_lines='skip') 
+        df_rooms = pd.read_csv('../datasets_extracted/tbl_room.csv', on_bad_lines='skip')
+        df_hotels = pd.read_csv('../datasets_extracted/tbl_hotel.csv', on_bad_lines='skip')
+        df_order_details = pd.read_csv('../datasets_extracted/tbl_order_details.csv', on_bad_lines='skip')
         
     except Exception as e:
         print(f"Lỗi đọc file: {e}")

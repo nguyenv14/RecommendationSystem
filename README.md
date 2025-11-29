@@ -1,5 +1,21 @@
 # 🏨 Hotel Recommendation System - Hệ Thống Gợi Ý Khách Sạn
 
+## 🚀 Quick Start - Unified Service
+
+**MỚI!** Giờ đây bạn có thể chạy cả RAG và Recommendation trong **1 service duy nhất**:
+
+```bash
+# Linux/Mac
+./run_unified_service.sh
+
+# Windows
+run_unified_service.bat
+```
+
+📖 **Xem chi tiết**: [QUICKSTART_UNIFIED.md](./QUICKSTART_UNIFIED.md) | [README_UNIFIED.md](./README_UNIFIED.md)
+
+---
+
 ## 📋 Mục Tiêu Dự Án
 
 Hệ thống gợi ý khách sạn thông minh tại Đà Nẵng sử dụng các kỹ thuật **Machine Learning** và **RAG (Retrieval-Augmented Generation)** để:
@@ -112,6 +128,16 @@ Hệ thống RAG có thể trả lời các câu hỏi tự nhiên bằng tiến
 
 ```
 RecommendationSystem/
+├── 🆕 unified_api_service.py   # Unified API Service (RAG + Recommendation)
+├── 🆕 requirements.txt          # Gộp tất cả dependencies
+├── 🆕 docker-compose.yml        # Gộp tất cả Docker services
+├── 🆕 Dockerfile.unified        # Dockerfile cho unified service
+├── 🆕 run_unified_service.sh    # Startup script (Linux/Mac)
+├── 🆕 run_unified_service.bat   # Startup script (Windows)
+├── 🆕 env.example               # Environment template
+├── 🆕 README_UNIFIED.md         # Unified service documentation
+├── 🆕 QUICKSTART_UNIFIED.md     # Quick start guide
+│
 ├── datasets_extracted/          # Dữ liệu gốc (CSV files)
 │   ├── tbl_hotel.csv
 │   ├── tbl_customers.csv
@@ -137,13 +163,13 @@ RecommendationSystem/
 │   ├── semantic_recommendation_system.py  # Semantic search
 │   ├── improved_recommendation_system.py # Improved NCF model
 │   ├── user_hotel_interaction.py     # Data preprocessing
-│   ├── api_service.py               # Flask API service
+│   ├── api_service.py               # Flask API service (standalone)
 │   ├── extract_tables_to_csv.py      # Data extraction
 │   ├── extract_tables_to_csv_v2.py   # Data extraction v2
 │   ├── requirements.txt              # Dependencies
 │   ├── requirements_api.txt          # API dependencies
 │   ├── requirements_semantic.txt     # Semantic dependencies
-│   └── docker-compose.yml            # Docker setup
+│   └── docker-compose.yml            # Docker setup (standalone)
 │
 ├── rag/                        # RAG System
 │   ├── simple_rag_system.py          # Main RAG system
@@ -155,7 +181,7 @@ RecommendationSystem/
 │   │   ├── hotel_similarity_map.json
 │   │   └── semantic_clusters.json
 │   ├── requirements_rag.txt           # Dependencies
-│   ├── docker-compose.yml             # Docker setup
+│   ├── docker-compose.yml             # Docker setup (standalone)
 │   ├── README_RAG.md                  # RAG documentation
 │   ├── README_RUN_PROJECT.md          # Run guide
 │   ├── README_RUN_NORMALIZATION.md    # Normalization guide
@@ -164,6 +190,8 @@ RecommendationSystem/
 │
 └── README.md                   # This file
 ```
+
+> **💡 Note**: Files đánh dấu 🆕 là phần **Unified Service** mới - gộp RAG và Recommendation thành 1 service duy nhất.
 
 ### **Chi Tiết Các Module**
 
@@ -350,6 +378,18 @@ RecommendationSystem/
 
 ## 📚 Documentation
 
+### **🆕 Version 2.0 (New Structure)**
+- **🏗️ New Structure**: `NEW_STRUCTURE.md` - Cấu trúc mới với clean architecture
+- **🔄 Migration Guide**: `README_V2_MIGRATION.md` - Hướng dẫn migrate lên v2.0
+- **📊 Collections Analysis**: `ANALYSIS_COLLECTIONS.md` - Phân tích xung đột collections
+- **📁 Source Code**: `src/README.md` - Documentation cho src/ directory
+
+### **Unified Service (Recommended)**
+- **🚀 Quick Start**: `QUICKSTART_UNIFIED.md` - Khởi động service trong 3 bước
+- **📖 Full Documentation**: `README_UNIFIED.md` - Documentation đầy đủ cho unified service
+- **🔧 Migration**: `MIGRATION_GUIDE.md` - Migrate từ services riêng lẻ
+
+### **Individual Services (Optional)**
 - **RAG System**: `rag/README_RAG.md`
 - **Run Project**: `rag/README_RUN_PROJECT.md`
 - **Normalization**: `rag/README_RUN_NORMALIZATION.md`

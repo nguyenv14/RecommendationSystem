@@ -5,7 +5,13 @@ RAG Chat API Service
 Flask API cho chat interface với RAG system
 """
 
+# CRITICAL: Set environment variables BEFORE any imports to prevent PyTorch loading
 import os
+os.environ['TRANSFORMERS_OFFLINE'] = '1'
+os.environ['HF_HUB_OFFLINE'] = '1'
+os.environ['TORCH_DISABLE_IMPORT'] = '1'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
 import socket
 import sys
 from pathlib import Path

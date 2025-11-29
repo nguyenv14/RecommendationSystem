@@ -1,0 +1,87 @@
+# =============================================================================
+# Unified Requirements for Hotel Recommendation & RAG System
+# Python 3.9+ Compatible
+# Last Updated: 2025-11-28
+# =============================================================================
+
+# ==================== Core Flask & Web ====================
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
+Werkzeug==3.0.1
+
+# ==================== Database ====================
+pymysql==1.1.0
+sqlalchemy==2.0.23
+cryptography==41.0.7
+
+# ==================== Data Processing ====================
+pandas==2.1.4
+numpy==1.26.2
+matplotlib==3.8.2
+
+# ==================== LangChain & RAG ====================
+langchain==0.1.0
+langchain-community==0.0.13
+langchain-core==0.1.10
+
+# ==================== OpenAI (for LM Studio compatibility) ====================
+openai==1.6.1
+
+# ==================== Vector Database ====================
+# IMPORTANT: Use 1.11.3 for compatibility with modern Qdrant server
+# Version 1.7.0 is too old and causes Pydantic validation errors
+qdrant-client==1.11.3
+
+# ==================== Pydantic (Compatibility) ====================
+# Use Pydantic v2 for qdrant-client 1.11.3
+pydantic==2.5.3
+pydantic-core>=2.14.0
+
+# ==================== Embeddings & Models (OPTIONAL) ====================
+# NOTE: PyTorch dependencies are COMMENTED OUT to avoid memory issues on Mac
+# RAG system uses Ollama for embeddings (no PyTorch needed)
+# Uncomment ONLY if you need semantic recommendation with local models
+# sentence-transformers==2.3.1
+# transformers==4.36.2
+# torch==2.1.2
+# accelerate==0.25.0
+# safetensors==0.4.1
+
+# ==================== Caching ====================
+redis==5.0.1
+hiredis==2.3.2
+
+# ==================== HTTP & Networking ====================
+requests==2.31.0
+urllib3>=1.26.0,<3.0.0  # Flexible for compatibility
+httpx==0.25.2
+httpcore==1.0.2
+
+# ==================== Utilities ====================
+python-json-logger==2.0.7
+tabulate==0.9.0
+protobuf==4.25.1
+
+# ==================== Logging ====================
+colorlog==6.8.0
+
+# ==================== Type Checking ====================
+typing-extensions==4.9.0
+
+# ==================== Additional Dependencies ====================
+certifi==2023.11.17
+charset-normalizer==3.3.2
+idna==3.6
+click==8.1.7
+itsdangerous==2.1.2
+Jinja2==3.1.2
+MarkupSafe==2.1.3
+
+# ==================== Development (Optional) ====================
+# Uncomment if needed for development
+# pytest==7.4.3
+# black==23.12.1
+# flake8==7.0.0
+# mypy==1.8.0
+

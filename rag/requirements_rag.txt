@@ -23,9 +23,8 @@ openai>=1.0.0
 qdrant-client==1.7.0
 
 # Embeddings (Ollama)
-# Note: Ollama is running separately, these are for local embeddings if needed
-sentence-transformers==2.2.2
-transformers==4.36.2
+# Note: Ollama is running separately, we use OllamaEmbeddings which doesn't require PyTorch
+# Removed sentence-transformers and transformers to avoid PyTorch memory issues on Mac
 
 # Optional: Redis for caching
 redis==5.0.1

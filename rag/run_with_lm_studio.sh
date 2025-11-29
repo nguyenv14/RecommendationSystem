@@ -17,7 +17,7 @@ fi
 
 # LM Studio configuration
 export LLM_PROVIDER="lm_studio"
-export LM_STUDIO_URL="http://192.168.10.42:1234"
+export LM_STUDIO_URL="http://127.0.0.1:1234"
 export LLM_MODEL="qwen/qwen3-4b-2507"
 
 # Other configuration (vẫn dùng Ollama cho embeddings)

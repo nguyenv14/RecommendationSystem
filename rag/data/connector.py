@@ -36,15 +36,16 @@ class DatabaseConnector:
             port: MySQL port (default: from env or 3308)
             user: MySQL user (default: from env or root)
             password: MySQL password (default: from env or root)
-            database: Database name (default: from env or rag_db)
+            database: Database name (default: from env or myhotel)
             charset: Character set (default: utf8mb4)
         """
         # Get config from environment or use defaults
+        # Default to 'myhotel' instead of 'rag_db' to match actual database
         self.host = host or os.environ.get('MYSQL_HOST', 'localhost')
         self.port = port or int(os.environ.get('MYSQL_PORT', '3308'))
         self.user = user or os.environ.get('MYSQL_USER', 'root')
         self.password = password or os.environ.get('MYSQL_PASSWORD', 'root')
-        self.database = database or os.environ.get('MYSQL_DATABASE', 'rag_db')
+        self.database = database or os.environ.get('MYSQL_DATABASE', 'myhotel')
         self.charset = charset
         
         # Create connection string
