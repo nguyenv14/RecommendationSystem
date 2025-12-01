@@ -54,9 +54,9 @@ class Settings:
         
         # ==================== RAG Configuration ====================
         self.AUTO_INDEX_COUPONS = os.getenv('AUTO_INDEX_COUPONS', 'true').lower() == 'true'
-        self.RAG_TOP_K = int(os.getenv('RAG_TOP_K', 5))  # k=5 theo RAG_FLOW_EXPLANATION.md
-        self.RAG_CHUNK_SIZE = int(os.getenv('RAG_CHUNK_SIZE', 800))  # chunk_size=800 theo RAG_FLOW_EXPLANATION.md
-        self.RAG_CHUNK_OVERLAP = int(os.getenv('RAG_CHUNK_OVERLAP', 50))  # chunk_overlap=50 theo RAG_FLOW_EXPLANATION.md
+        self.RAG_TOP_K = int(os.getenv('RAG_TOP_K', 5))
+        self.RAG_CHUNK_SIZE = int(os.getenv('RAG_CHUNK_SIZE', 1000))
+        self.RAG_CHUNK_OVERLAP = int(os.getenv('RAG_CHUNK_OVERLAP', 200))
         
         # ==================== Recommendation Configuration ====================
         self.REC_TOP_K = int(os.getenv('REC_TOP_K', 10))

@@ -9,6 +9,7 @@ import hashlib
 from langchain_community.embeddings import OllamaEmbeddings
 import requests
 from ..shared import get_logger
+from .persistent_cache import PersistentEmbeddingCache
 
 logger = get_logger(__name__)
 
@@ -49,8 +50,14 @@ class EmbeddingService:
         self.cache_enabled = cache_enabled
         self.device = device  # Not used but kept for compatibility
         
-        # Cache
+        # In-memory cache (for fast access)
         self._cache = {}
+        
+        # Persistent cache (disk-based)
+        self._persistent_cache = PersistentEmbeddingCache(
+            cache_dir=".embedding_cache",
+            ttl_days=30
+        ) if cache_enabled else None
         
         # Initialize model
         self._init_model()
@@ -83,14 +90,35 @@ class EmbeddingService:
         if not self.cache_enabled:
             return None
         
+        # Check in-memory cache first
         cache_key = self._get_cache_key(text)
-        return self._cache.get(cache_key)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        
+        # Check persistent cache
+        if self._persistent_cache:
+            cached = self._persistent_cache.get(text)
+            if cached is not None:
+                # Store in memory cache for faster access
+                self._cache[cache_key] = cached
+                return cached
+        
+        return None
     
     def _store_cache(self, text: str, embedding: List[float]):
         """Store embedding in cache"""
         if self.cache_enabled:
             cache_key = self._get_cache_key(text)
+            # Store in memory cache
             self._cache[cache_key] = embedding
+            # Store in persistent cache
+            if self._persistent_cache:
+                self._persistent_cache.set(
+                    text, 
+                    embedding,
+                    metadata={'model': self.model_name, 'provider': self.provider}
+                )
     
     def embed_query(self, text: str) -> List[float]:
         """
@@ -149,17 +177,41 @@ class EmbeddingService:
             if show_progress and i % (batch_size * 5) == 0:
                 logger.info(f"Embedding progress: {i}/{total}")
             
-            # Check cache for batch
-            batch_embeddings = []
+            # Check cache for batch first
+            texts_to_embed = []
+            cached_embeddings = {}
+            
             for text in batch:
                 cached = self._check_cache(text)
                 if cached is not None:
-                    batch_embeddings.append(cached)
+                    cached_embeddings[text] = cached
                 else:
-                    # Need to embed
-                    emb = self.embed_query(text)
-                    batch_embeddings.append(emb)
+                    texts_to_embed.append(text)
             
+            # Batch embed texts that are not cached
+            if texts_to_embed:
+                if self.provider == "ollama":
+                    # Use batch embedding if available
+                    try:
+                        batch_emb = self.model.embed_documents(texts_to_embed)
+                        for text, emb in zip(texts_to_embed, batch_emb):
+                            cached_embeddings[text] = emb
+                            # Store in cache
+                            self._store_cache(text, emb)
+                    except Exception as e:
+                        # Fallback to individual embedding
+                        logger.warning(f"Batch embedding failed, falling back to individual: {e}")
+                        for text in texts_to_embed:
+                            emb = self.embed_query(text)
+                            cached_embeddings[text] = emb
+                else:
+                    # Fallback to individual embedding
+                    for text in texts_to_embed:
+                        emb = self.embed_query(text)
+                        cached_embeddings[text] = emb
+            
+            # Reconstruct batch in original order
+            batch_embeddings = [cached_embeddings[text] for text in batch]
             embeddings.extend(batch_embeddings)
         
         if show_progress:

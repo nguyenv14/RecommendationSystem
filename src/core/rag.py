@@ -5,13 +5,12 @@ Sử dụng LangChain RetrievalQA chain giống simple_rag_system.py
 """
 
 from typing import List, Dict, Optional, Any
-from langchain_community.vectorstores import Qdrant
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
 from .embeddings import EmbeddingService
 from .vectorstore import VectorStoreService
 from .retriever import RetrieverService
 from .generator import GeneratorService
+from .query_preprocessor import QueryPreprocessor
+from .response_cache import ResponseCache
 from ..shared import get_logger
 from ..config import get_settings, Collections
 
@@ -20,9 +19,9 @@ logger = get_logger(__name__)
 
 class RAGService:
     """
-    Unified RAG service
-    Sử dụng LangChain RetrievalQA chain giống simple_rag_system.py
-    Flow: Query → Embedding → Vector Search (k=5) → Combine Context → Build Prompt → LLM Generation → Parse Response
+    Unified RAG service với optimized flow
+    Flow: Response Cache → Query Preprocessing → Embedding Cache → Batch Embed → 
+          Hybrid Search → Re-rank → Build Context (token limit) → Generate → Cache Response
     """
     
     def __init__(
@@ -31,7 +30,8 @@ class RAGService:
         vectorstore_service: Optional[VectorStoreService] = None,
         retriever_service: Optional[RetrieverService] = None,
         generator_service: Optional[GeneratorService] = None,
-        collection_name: Optional[str] = None
+        collection_name: Optional[str] = None,
+        response_cache_ttl: int = 3600
     ):
         """
         Initialize RAG service
@@ -42,6 +42,7 @@ class RAGService:
             retriever_service: Optional retriever service (creates if None)
             generator_service: Optional generator service (creates if None)
             collection_name: Collection to use for RAG
+            response_cache_ttl: Response cache TTL in seconds (default: 1 hour)
         """
         settings = get_settings()
         
@@ -82,131 +83,67 @@ class RAGService:
         self.generator = generator_service
         self.collection_name = collection_name or settings.RAG_COLLECTION_HOTELS
         
-        # LangChain Qdrant vectorstore (for RetrievalQA chain)
-        self.vectorstore: Optional[Qdrant] = None
-        self.retriever = None
-        self.qa_chain: Optional[RetrievalQA] = None
-        
-        # Initialize QA chain
-        self._initialize_qa_chain()
+        # Initialize optimizations
+        self.query_preprocessor = QueryPreprocessor()
+        self.response_cache = ResponseCache(ttl=response_cache_ttl)
         
         logger.info(f"✅ RAGService initialized (collection={self.collection_name})")
     
-    def _initialize_qa_chain(self):
-        """Initialize QA chain với LangChain RetrievalQA (giống simple_rag_system.py)"""
-        try:
-            # Create LangChain Qdrant vectorstore
-            from qdrant_client import QdrantClient
-            
-            client = QdrantClient(url=self.vectorstore_service.url)
-            
-            # Check if collection exists
-            if not self.vectorstore_service.collection_exists(self.collection_name):
-                logger.warning(f"Collection '{self.collection_name}' does not exist. Please index documents first.")
-                return
-            
-            # Create LangChain Qdrant vectorstore wrapper
-            # Note: LangChain Qdrant wrapper cần embeddings và client
-            self.vectorstore = Qdrant(
-                client=client,
-                collection_name=self.collection_name,
-                embeddings=self.embedding.model  # LangChain embeddings
-            )
-            
-            # Create retriever với k=5 (theo RAG_FLOW_EXPLANATION.md)
-            self.retriever = self.vectorstore.as_retriever(
-                search_kwargs={"k": 5}  # Top 5 documents
-            )
-            
-            # Prompt template (giống simple_rag_system.py)
-            prompt_template = """Bạn là trợ lý tư vấn khách sạn tại Đà Nẵng. Trả lời HOÀN TOÀN bằng tiếng Việt.
-
-Thông tin khách sạn:
-{context}
-
-Câu hỏi: {question}
-
-QUAN TRỌNG: 
-- CHỈ trả lời các câu hỏi liên quan đến khách sạn, nhà nghỉ, resort, homestay tại Đà Nẵng.
-- Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
-- Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
-
-QUY TẮC BẮT BUỘC VỀ TÊN KHÁCH SẠN - TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM:
-❌ NGHIÊM CẤM sử dụng tên thương hiệu (brand_name) như: "Meliá Hotels International", "Accor", "InterContinental Hotels Group"
-✅ BẮT BUỘC sử dụng TÊN KHÁCH SẠN CỤ THỂ từ trường "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU mỗi block trong context
-
-VÍ DỤ CÁCH TRẢ LỜI ĐÚNG VÀ SAI:
-✅ ĐÚNG: "Grand Tourane Hotel" (lấy từ "Tên khách sạn: Grand Tourane Hotel")
-✅ ĐÚNG: "Meliá Vinpearl Riverfront Đà Nẵng" (lấy từ "Tên khách sạn: Meliá Vinpearl Riverfront Đà Nẵng")
-✅ ĐÚNG: "Pullman Danang Beach Resort" (lấy từ "Tên khách sạn: Pullman Danang Beach Resort")
-❌ SAI: "Meliá Đà Nẵng – Xuân Thiều" (sai vì đây KHÔNG phải tên khách sạn trong database)
-❌ SAI: "Accor Hotel tại Đà Nẵng" (sai vì đây là brand, không phải tên khách sạn cụ thể)
-❌ SAI: "InterContinental Đà Nẵng" (sai nếu tên đầy đủ là "InterContinental Danang Sun Peninsula Resort")
-❌ SAI: "Meliá Hotels International" (sai vì đây là brand name, phải dùng tên khách sạn cụ thể)
-
-CÁCH XÁC ĐỊNH TÊN KHÁCH SẠN ĐÚNG (BẮT BUỘC):
-1. Tìm dòng "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU TIÊN trong mỗi block thông tin của context
-2. Sử dụng CHÍNH XÁC, NGUYÊN VĂN tên đó, KHÔNG RÚT GỌN, KHÔNG thay bằng brand name, KHÔNG tự bịa tên
-3. Dòng "Thương hiệu:" CHỈ để tham khảo nhóm khách sạn, TUYỆT ĐỐI KHÔNG dùng để đặt tên khách sạn trong câu trả lời
-
-Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. BẮT BUỘC nêu TÊN KHÁCH SẠN CỤ THỂ (lấy CHÍNH XÁC từ "Tên khách sạn:" trong context), giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
-
-Trả lời:"""
-            
-            PROMPT = PromptTemplate(
-                template=prompt_template,
-                input_variables=["context", "question"]
-            )
-            
-            # Create QA chain với chain_type="stuff" (giống simple_rag_system.py)
-            # chain_type="stuff": Combine tất cả 5 documents vào 1 prompt
-            self.qa_chain = RetrievalQA.from_chain_type(
-                llm=self.generator.llm,
-                chain_type="stuff",  # Combine tất cả context vào 1 prompt
-                retriever=self.retriever,  # k=5
-                chain_type_kwargs={"prompt": PROMPT},
-                return_source_documents=True,
-                verbose=False
-            )
-            
-            logger.info("✅ QA chain initialized (k=5, chain_type='stuff')")
-            
-        except Exception as e:
-            logger.error(f"Error initializing QA chain: {e}")
-            logger.warning("QA chain not initialized. Please ensure collection exists and documents are indexed.")
     
     def ask(
         self,
         question: str,
         top_k: Optional[int] = None,
         filters: Optional[Dict[str, Any]] = None,
-        prompt_template: Optional[str] = None
+        prompt_template: Optional[str] = None,
+        use_cache: bool = True
     ) -> Dict[str, Any]:
         """
-        Ask a question and get answer (main RAG flow)
-        Theo RAG_FLOW_EXPLANATION.md:
-        Flow: Query → Embedding → Vector Search (k=5) → Combine Context → Build Prompt → LLM Generation → Parse Response
+        Ask a question and get answer (optimized RAG flow)
+        
+        Flow:
+        1. Check Response Cache → Hit? → Return (0.1s)
+        2. Preprocess Query (normalize, expand synonyms)
+        3. Check Embedding Cache → Hit? → Use cached
+        4. Batch Embed Query (nếu nhiều queries)
+        5. Hybrid Search (semantic + keyword) - TODO: implement
+        6. Re-rank Results (cross-encoder) - TODO: implement
+        7. Build Context (với token limit, sort by relevance)
+        8. Generate Answer (optimized prompt)
+        9. Cache Response
         
         Args:
             question: User question
-            top_k: Number of documents to retrieve (default: 5 theo RAG_FLOW_EXPLANATION.md)
+            top_k: Number of documents to retrieve (default: 5)
             filters: Optional filters for retrieval
             prompt_template: Optional custom prompt template
+            use_cache: Whether to use response cache
             
         Returns:
             Dict with question, answer, sources
         """
         logger.info(f"RAG question: '{question[:50]}...'")
         
-        # Use unified RetrieverService + GeneratorService instead of LangChain RetrievalQA
+        # Step 1: Check Response Cache
+        if use_cache:
+            cached_response = self.response_cache.get(question)
+            if cached_response is not None:
+                logger.info("✅ Response cache hit")
+                return cached_response
+        
         try:
-            # Step 1-2: Generate Query Embedding + Vector Search (Retriever) → Top 5 documents
-            # Theo RAG_FLOW_EXPLANATION.md: k=5 documents
-            if top_k is None:
-                top_k = 5  # Default k=5 theo RAG_FLOW_EXPLANATION.md
+            # Step 2: Preprocess Query
+            processed_query = self.query_preprocessor.preprocess(question)
+            logger.debug(f"Processed query: '{processed_query}'")
             
+            # Step 3-4: Embedding (with cache check) + Vector Search
+            if top_k is None:
+                top_k = 5  # Default k=5
+            
+            # Note: Embedding cache is handled inside RetrieverService.retrieve()
+            # which calls EmbeddingService.embed_query() which checks cache
             documents = self.retriever_service.retrieve(
-                query=question,
+                query=processed_query,  # Use processed query
                 collection_name=self.collection_name,
                 top_k=top_k,
                 filters=filters
@@ -214,23 +151,36 @@ Trả lời:"""
             
             if not documents:
                 logger.warning("No documents retrieved for question")
-                return {
+                result = {
                     "question": question,
                     "answer": "Xin lỗi, tôi không tìm thấy thông tin phù hợp trong hệ thống cho câu hỏi này.",
                     "sources": [],
                     "num_sources": 0
                 }
+                # Cache negative result too (shorter TTL could be used)
+                if use_cache:
+                    self.response_cache.set(question, result)
+                return result
             
             logger.info(f"Retrieved {len(documents)} documents (expected: {top_k})")
             
-            # Step 3-4: Combine Context từ documents + Build Prompt với Context + Question
-            # Step 5-6: LLM Generation (max_tokens: 2048, temperature: 0.3) + Parse Response + Extract Sources
-            # Theo RAG_FLOW_EXPLANATION.md: GeneratorService handles context building, prompt building, LLM generation
+            # Step 5: Hybrid Search - TODO: implement
+            # For now, just use semantic search results
+            
+            # Step 6: Re-rank Results - TODO: implement
+            # For now, documents are already sorted by score from Qdrant
+            
+            # Step 7-8: Build Context (với token limit) + Generate Answer
             result = self.generator.generate_from_documents(
-                query=question,
+                query=question,  # Use original question for generation
                 documents=documents,
-                prompt_template=prompt_template
+                prompt_template=prompt_template,
+                max_context_tokens=4000  # Token limit
             )
+            
+            # Step 9: Cache Response
+            if use_cache:
+                self.response_cache.set(question, result)
             
             logger.info(f"✅ RAG answer generated (sources: {len(result.get('sources', []))})")
             return result
@@ -310,8 +260,9 @@ Trả lời:"""
                     recreate=recreate_collection
                 )
             
-            # Prepare points
-            points = []
+            # Prepare texts for batch embedding
+            texts = []
+            doc_metadata = []
             
             for doc in documents:
                 doc_id = doc.get(id_field)
@@ -321,11 +272,30 @@ Trả lời:"""
                     logger.warning(f"Skipping document without ID or text: {doc}")
                     continue
                 
-                # Embed text
-                vector = self.embedding.embed_query(text)
+                texts.append(text)
+                doc_metadata.append({
+                    'id': doc_id,
+                    'doc': doc,
+                    'text_field': text_field,
+                    'metadata_fields': metadata_fields
+                })
+            
+            # Batch embed all texts (optimized)
+            logger.info(f"Batch embedding {len(texts)} documents...")
+            vectors = self.embedding.embed_documents(texts, batch_size=32, show_progress=True)
+            
+            # Prepare points
+            from qdrant_client.models import PointStruct
+            points = []
+            
+            for i, (vector, meta) in enumerate(zip(vectors, doc_metadata)):
+                doc_id = meta['id']
+                doc = meta['doc']
+                text_field = meta['text_field']
+                metadata_fields = meta['metadata_fields']
                 
                 # Prepare payload
-                payload = {text_field: text}
+                payload = {text_field: texts[i]}
                 
                 # Add metadata fields
                 if metadata_fields:
@@ -337,7 +307,6 @@ Trả lời:"""
                     payload.update(doc)
                 
                 # Create point
-                from qdrant_client.models import PointStruct
                 point = PointStruct(
                     id=doc_id,
                     vector=vector,
@@ -350,10 +319,6 @@ Trả lời:"""
                 collection_name=self.collection_name,
                 points=points
             )
-            
-            # Re-initialize QA chain after indexing
-            if success:
-                self._initialize_qa_chain()
             
             if success:
                 logger.info(f"✅ Indexed {len(points)} documents")
@@ -383,9 +348,12 @@ Trả lời:"""
                 },
                 "embedding": cache_stats,
                 "retriever": {
-                    "default_top_k": self.retriever_service.default_top_k,
-                    "qa_chain_k": 5  # k=5 for QA chain
+                    "default_top_k": self.retriever_service.default_top_k
                 },
+                "query_preprocessor": {
+                    "enabled": True
+                },
+                "response_cache": self.response_cache.get_stats(),
                 "generator": {
                     "provider": self.generator.provider,
                     "model": self.generator.model_name,

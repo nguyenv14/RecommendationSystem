@@ -125,7 +125,8 @@ class GeneratorService:
         self,
         query: str,
         documents: List[Dict[str, Any]],
-        prompt_template: Optional[str] = None
+        prompt_template: Optional[str] = None,
+        max_context_tokens: int = 4000
     ) -> Dict[str, Any]:
         """
         Generate answer from list of retrieved documents
@@ -134,12 +135,13 @@ class GeneratorService:
             query: User query
             documents: List of retrieved documents
             prompt_template: Optional custom prompt
+            max_context_tokens: Maximum tokens for context
             
         Returns:
             Dict with answer and sources
         """
-        # Build context from documents
-        context = self._build_context(documents)
+        # Build context from documents với token limit
+        context = self._build_context(documents, max_tokens=max_context_tokens)
         
         # Generate answer
         answer = self.generate(query, context, prompt_template)
@@ -154,35 +156,71 @@ class GeneratorService:
             "num_sources": len(sources)
         }
     
-    def _build_context(self, documents: List[Dict[str, Any]]) -> str:
+    def _build_context(
+        self, 
+        documents: List[Dict[str, Any]], 
+        max_tokens: int = 4000
+    ) -> str:
         """
-        Build context string from documents
-        Theo RAG_FLOW_EXPLANATION.md: Combine 5 documents thành context string
-        Format: Mỗi document là 1 chunk của hotel data, combine lại
+        Build context string from documents với token limit management
+        Theo RAG_FLOW_EXPLANATION.md: Combine documents thành context string
+        Optimized: Sort by relevance, respect token limit
         
         Args:
             documents: List of documents (expected: 5 documents theo RAG_FLOW_EXPLANATION.md)
+            max_tokens: Maximum tokens for context (default: 4000)
             
         Returns:
             Context string (tổng context có thể ~4000-5000 characters với k=5, chunk_size=800)
         """
-        context_parts = []
+        # Sort documents by relevance score (highest first)
+        sorted_docs = sorted(
+            documents, 
+            key=lambda x: x.get("score", 0.0), 
+            reverse=True
+        )
         
-        for i, doc in enumerate(documents, 1):
+        context_parts = []
+        current_tokens = 0
+        
+        # Approximate token counting (rough estimate: 1 token ≈ 4 characters for Vietnamese)
+        # For more accurate counting, would need tiktoken or similar
+        chars_per_token = 4
+        
+        for i, doc in enumerate(sorted_docs, 1):
             payload = doc.get("payload", {})
             
             # Try to extract meaningful text
             # Priority: page_content (from Qdrant) > semantic_text > other text fields
             text = payload.get("page_content") or self._extract_text(payload)
             
-            if text:
-                # Format: [Document N] + text content
-                # Theo RAG_FLOW_EXPLANATION.md: LangChain tự động combine doc1.page_content + doc2.page_content + ...
-                context_parts.append(f"[Document {i}]\n{text}")
+            if not text:
+                continue
+            
+            # Estimate tokens for this document
+            doc_text = f"[Document {i}]\n{text}"
+            estimated_tokens = len(doc_text) / chars_per_token
+            
+            # Check if adding this document would exceed limit
+            if current_tokens + estimated_tokens > max_tokens:
+                # Try to truncate document to fit
+                remaining_tokens = max_tokens - current_tokens
+                if remaining_tokens > 100:  # Only if we have meaningful space left
+                    max_chars = int(remaining_tokens * chars_per_token)
+                    text = text[:max_chars] + "..."
+                    doc_text = f"[Document {i}]\n{text}"
+                    context_parts.append(doc_text)
+                break
+            
+            context_parts.append(doc_text)
+            current_tokens += estimated_tokens
         
         # Combine tất cả documents thành 1 context string
         # Theo RAG_FLOW_EXPLANATION.md: chain_type="stuff" combines all documents into 1 prompt
-        return "\n\n".join(context_parts) if context_parts else "Không có thông tin."
+        result = "\n\n".join(context_parts) if context_parts else "Không có thông tin."
+        
+        logger.debug(f"Built context: {len(context_parts)} documents, ~{int(current_tokens)} tokens")
+        return result
     
     def _extract_text(self, payload: Dict[str, Any]) -> str:
         """Extract text from document payload"""
