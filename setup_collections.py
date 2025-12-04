@@ -292,41 +292,50 @@ def main():
         # 2. Create collections
         create_collections(vectorstore_service)
         
-        # 3. Check if collections have data
-        logger.info("\n🔍 Checking collections data...")
+        # 3. Check if collections need update (compare DB and Qdrant counts)
+        logger.info("\n🔍 Checking collections data and DB for updates...")
         client = vectorstore_service.client
         collections = client.get_collections()
-        
-        has_data = True
-        for col in collections.collections:
-            info = client.get_collection(col.name)
-            logger.info(f"  {col.name}: {info.points_count} points")
-            if info.points_count == 0:
-                has_data = False
-        
-        # 4. Index data (if needed or forced)
-        auto_index = os.getenv('AUTO_INDEX_DATA', 'false').lower() == 'true'
-        
         should_index = False
+        # Check hotels collection
+        try:
+            from sqlalchemy import create_engine, text
+            settings = get_settings()
+            engine = create_engine(
+                f"mysql+pymysql://{settings.MYSQL_USER}:{settings.MYSQL_PASSWORD}@"
+                f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}",
+                pool_pre_ping=True
+            )
+            query = "SELECT COUNT(*) FROM tbl_hotel WHERE hotel_status = 1"
+            db_count = engine.execute(text(query)).scalar()
+            engine.dispose()
+            hotels_collection = None
+            for col in collections.collections:
+                if col.name == "hotels_recommendation":
+                    hotels_collection = client.get_collection(col.name)
+                    break
+            qdrant_count = hotels_collection.points_count if hotels_collection else 0
+            logger.info(f"  DB hotels: {db_count}, Qdrant hotels: {qdrant_count}")
+            if db_count != qdrant_count:
+                should_index = True
+                logger.info("\n🔄 DB and Qdrant counts differ, will index data...")
+        except Exception as e:
+            logger.warning(f"Could not compare DB and Qdrant counts: {e}")
+            should_index = True
+        # Also allow force index by env
+        auto_index = os.getenv('AUTO_INDEX_DATA', 'false').lower() == 'true'
         if auto_index:
             should_index = True
             logger.info("\n🔄 AUTO_INDEX_DATA=true, will index data...")
-        elif not has_data:
-            should_index = True
-            logger.info("\n🔄 Some collections empty, will index data...")
-        else:
-            logger.info("\n✅ All collections have data, skipping indexing")
-        
         if should_index:
             # Index RAG data
             rag_success = index_rag_data()
-            
             # Index Recommendation data
             rec_success = index_recommendation_data()
-            
             if not (rag_success and rec_success):
                 logger.warning("\n⚠️  Some indexing failed, but collections are ready")
         else:
+            logger.info("\n✅ All collections up-to-date, skipping indexing")
             logger.info("\n💡 To re-index manually:")
             logger.info("   - RAG: cd rag/ && python simple_rag_system.py")
             logger.info("   - Recommendation: cd recommendation/ && python semantic_recommendation_system.py")

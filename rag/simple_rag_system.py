@@ -44,6 +44,19 @@ except ImportError:
     HotelDataNormalizer = None
     CouponDataNormalizer = None
 
+# Import query router
+try:
+    from rag.core.query_router import QueryRouter
+    from rag.core.sql_query_generator import SQLQueryGenerator
+except ImportError:
+    try:
+        from core.query_router import QueryRouter
+        from core.sql_query_generator import SQLQueryGenerator
+    except ImportError:
+        logger.warning("Could not import QueryRouter or SQLQueryGenerator")
+        QueryRouter = None
+        SQLQueryGenerator = None
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -228,6 +241,28 @@ class SimpleRAGSystem:
         
         # Keyword extraction configuration
         self.use_llm_for_extraction = True  # Use LLM for keyword extraction (smart, flexible)
+        
+        # Initialize query router (for classifying statistical vs semantic queries)
+        if QueryRouter is not None:
+            self.query_router = QueryRouter(
+                use_llm=True,  # Use LLM when confidence is low
+                llm=self.llm
+            )
+            logger.info("✅ Query Router initialized")
+        else:
+            self.query_router = None
+            logger.warning("⚠️  Query Router not available")
+        
+        # Initialize SQL query generator (for statistical queries)
+        if SQLQueryGenerator is not None:
+            self.sql_generator = SQLQueryGenerator(
+                use_llm=True,  # Use LLM for complex queries
+                llm=self.llm
+            )
+            logger.info("✅ SQL Query Generator initialized")
+        else:
+            self.sql_generator = None
+            logger.warning("⚠️  SQL Query Generator not available")
     
     def _preload_model(self, ollama_url: str, llm_model: str):
         """Pre-load model bằng cách gọi Ollama API trực tiếp"""
@@ -1575,11 +1610,12 @@ CHỈ trả về JSON, không có text khác."""
     
     def ask(self, question: str) -> Dict:
         """
-        Ask question với RAG (Retrieval + Generation)
+        Ask question với RAG hoặc SQL tùy loại câu hỏi
         
-        Architecture: Layer 3 - Generation Pipeline
-        - Uses LangChain RetrievalQA chain
-        - Optionally filters by location if extracted from query
+        Architecture: Layer 3 - Generation Pipeline với Query Routing
+        - Phân loại câu hỏi: Statistical (SQL) vs Semantic (RAG)
+        - Uses LangChain RetrievalQA chain cho semantic queries
+        - TODO: Uses SQL query cho statistical queries
         
         Args:
             question: User question
@@ -1592,6 +1628,73 @@ CHỈ trả về JSON, không có text khác."""
         
         logger.info(f"Question: '{question}'")
         
+        # 1. Phân loại câu hỏi (nếu có query router)
+        query_type = "semantic"  # Default
+        classification = None
+        
+        if self.query_router is not None:
+            logger.info("✅ QueryRouter is available, classifying query...")
+            classification = self.query_router.classify_query(question)
+            query_type = classification["type"]
+            confidence = classification["confidence"]
+            
+            logger.info(f"📊 Query classified as: {query_type} (confidence: {confidence:.2f})")
+            logger.info(f"   Reason: {classification.get('reason', 'N/A')}")
+            logger.info(f"   Method: {classification.get('method', 'N/A')}")
+        else:
+            logger.warning("⚠️  QueryRouter is None, defaulting to semantic (RAG)")
+        
+        # 2. Route to appropriate handler
+        if query_type == "statistical":
+            logger.info("🔍 Routing to SQL handler...")
+            # Check if SQL generator and DB connector are available
+            if self.sql_generator is None:
+                logger.warning("⚠️  SQL generator is None, using RAG fallback")
+                return self._ask_with_rag(question)
+            
+            # Initialize DB connector if not already done
+            if self.db_connector is None:
+                logger.info("🔄 Initializing database connector...")
+                if DatabaseConnector is None:
+                    logger.error("❌ DatabaseConnector not available, using RAG fallback")
+                    return self._ask_with_rag(question)
+                try:
+                    self.db_connector = DatabaseConnector()
+                    if not self.db_connector.test_connection():
+                        logger.error("❌ Database connection failed, using RAG fallback")
+                        return self._ask_with_rag(question)
+                    logger.info("✅ Database connector initialized successfully")
+                except Exception as e:
+                    logger.error(f"❌ Error initializing database connector: {e}, using RAG fallback")
+                    return self._ask_with_rag(question)
+            
+            # Use SQL query để trả lời chính xác
+            logger.info("✅ Both SQL generator and DB connector available, executing SQL query...")
+            return self._ask_with_sql(question, classification)
+        
+        elif query_type == "hybrid":
+            # TODO: Implement hybrid handler (SQL + RAG)
+            logger.warning("⚠️  Hybrid queries not yet implemented, using SQL for now")
+            if self.sql_generator is not None and self.db_connector is not None:
+                return self._ask_with_sql(question, classification)
+            else:
+                return self._ask_with_rag(question)
+        
+        else:  # semantic (default)
+            # Use RAG như cũ
+            return self._ask_with_rag(question)
+    
+    def _ask_with_rag(self, question: str) -> Dict:
+        """
+        Ask question với RAG (Retrieval + Generation)
+        Helper method để tách logic RAG
+        
+        Args:
+            question: User question
+            
+        Returns:
+            Dictionary with answer and sources
+        """
         # Extract location from question (optional optimization)
         # If location found, we could use custom retriever with filter
         # For now, use standard QA chain (semantic search handles location well)
@@ -1634,6 +1737,145 @@ CHỈ trả về JSON, không có text khác."""
             })
         
         return response
+    
+    def _ask_with_sql(self, question: str, classification: Dict = None) -> Dict:
+        """
+        Ask question với SQL query (cho statistical queries)
+        
+        Args:
+            question: User question
+            classification: Classification result từ query router
+            
+        Returns:
+            Dictionary with answer and sources
+        """
+        if self.sql_generator is None:
+            raise ValueError("SQL generator not initialized")
+        
+        if self.db_connector is None:
+            # Initialize database connector if not already done
+            if DatabaseConnector is None:
+                raise ValueError("DatabaseConnector not available. Cannot execute SQL queries.")
+            self.db_connector = DatabaseConnector()
+            if not self.db_connector.test_connection():
+                raise ConnectionError("Failed to connect to database")
+        
+        logger.info(f"🔍 Generating SQL query for: '{question}'")
+        
+        # Extract keywords để pass vào SQL generator
+        extracted_keywords = self._extract_keywords_from_query(
+            question,
+            use_llm=self.use_llm_for_extraction
+        )
+        
+        # Generate SQL query
+        sql_info = self.sql_generator.generate_sql(question, extracted_keywords)
+        sql = sql_info["sql"]
+        query_type = sql_info["query_type"]
+        
+        logger.info(f"📊 Generated SQL ({query_type}): {sql}")
+        
+        # Execute SQL query
+        try:
+            from sqlalchemy import text
+            
+            with self.db_connector.engine.connect() as conn:
+                result = conn.execute(text(sql))
+                row = result.fetchone()
+                
+                if row is None:
+                    count = 0
+                else:
+                    # Get result based on query type
+                    if query_type == "count":
+                        count = row[0] if row[0] is not None else 0
+                    elif query_type == "avg":
+                        avg_price = float(row[0]) if row[0] is not None else 0
+                        # Format answer for average price
+                        answer = f"Giá trung bình của khách sạn"
+                        if extracted_keywords.get("location"):
+                            answer += f" ở {extracted_keywords['location']}"
+                        if extracted_keywords.get("rank"):
+                            answer += f" {extracted_keywords['rank']} sao"
+                        answer += f" là {avg_price:,.0f} VND"
+                        
+                        return {
+                            "question": question,
+                            "answer": answer,
+                            "sources": [],
+                            "query_type": "statistical",
+                            "sql": sql
+                        }
+                    elif query_type == "max":
+                        max_price = float(row[0]) if row[0] is not None else 0
+                        answer = f"Giá cao nhất của khách sạn"
+                        if extracted_keywords.get("location"):
+                            answer += f" ở {extracted_keywords['location']}"
+                        answer += f" là {max_price:,.0f} VND"
+                        
+                        return {
+                            "question": question,
+                            "answer": answer,
+                            "sources": [],
+                            "query_type": "statistical",
+                            "sql": sql
+                        }
+                    elif query_type == "min":
+                        min_price = float(row[0]) if row[0] is not None else 0
+                        answer = f"Giá thấp nhất của khách sạn"
+                        if extracted_keywords.get("location"):
+                            answer += f" ở {extracted_keywords['location']}"
+                        answer += f" là {min_price:,.0f} VND"
+                        
+                        return {
+                            "question": question,
+                            "answer": answer,
+                            "sources": [],
+                            "query_type": "statistical",
+                            "sql": sql
+                        }
+                    elif query_type == "exists":
+                        exists = bool(row[0])
+                        location = extracted_keywords.get("location", "")
+                        answer = f"{'Có' if exists else 'Không có'} khách sạn"
+                        if location:
+                            answer += f" ở {location}"
+                        answer += " trong hệ thống."
+                        
+                        return {
+                            "question": question,
+                            "answer": answer,
+                            "sources": [],
+                            "query_type": "statistical",
+                            "sql": sql
+                        }
+                    else:
+                        count = row[0] if row[0] is not None else 0
+                
+                # Format answer for count query
+                answer = f"Có {count} khách sạn"
+                if extracted_keywords.get("location"):
+                    answer += f" trong khu vực {extracted_keywords['location']}"
+                if extracted_keywords.get("rank"):
+                    answer += f" {extracted_keywords['rank']} sao"
+                answer += " trong hệ thống."
+                
+                logger.info(f"✅ SQL query executed successfully: {count} hotels found")
+                
+                return {
+                    "question": question,
+                    "answer": answer,
+                    "sources": [],
+                    "query_type": "statistical",
+                    "sql": sql,
+                    "count": count
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Error executing SQL query: {e}")
+            # Fallback to RAG
+            logger.warning("⚠️  Falling back to RAG due to SQL error")
+            return self._ask_with_rag(question)
     
     def load_vectorstore(self):
         """Load existing vectorstore from Qdrant"""
