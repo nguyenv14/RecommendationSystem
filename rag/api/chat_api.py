@@ -15,14 +15,39 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 import socket
 import sys
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, Response
 from flask_cors import CORS
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from simple_rag_system import SimpleRAGSystem
+
+# Try to import ApiResponse from src/shared, fallback to local implementation
+try:
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from src.shared.response import ApiResponse
+except ImportError:
+    # Local implementation if src/shared not available
+    class ApiResponse:
+        @staticmethod
+        def success(data: Any = None, message: str = "OK", code: int = 200) -> Tuple[Response, int]:
+            return jsonify({
+                "success": True,
+                "code": code,
+                "message": message,
+                "data": data
+            }), code
+        
+        @staticmethod
+        def error(message: str = "Error", code: int = 400, data: Any = None) -> Tuple[Response, int]:
+            return jsonify({
+                "success": False,
+                "code": code,
+                "message": message,
+                "data": data
+            }), code
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -170,11 +195,18 @@ def health_check():
     else:
         qdrant_connected = False
     
-    return jsonify({
-        'status': 'ok' if rag_initialized and qdrant_connected else 'error',
-        'rag_initialized': rag_initialized,
-        'qdrant_connected': qdrant_connected
-    })
+    status = 'ok' if rag_initialized and qdrant_connected else 'error'
+    status_code = 200 if status == 'ok' else 503
+    
+    return ApiResponse.success(
+        data={
+            'status': status,
+            'rag_initialized': rag_initialized,
+            'qdrant_connected': qdrant_connected
+        },
+        message='Health check completed',
+        code=status_code
+    )
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -186,18 +218,20 @@ def chat():
         rag_system = initialize_rag_system()
     
     if rag_system is None:
-        return jsonify({
-            'error': 'RAG system not initialized. Please ensure Qdrant collection exists.'
-        }), 500
+        return ApiResponse.error(
+            message='RAG system not initialized. Please ensure Qdrant collection exists.',
+            code=500
+        )
     
     try:
         data = request.get_json()
         question = data.get('question', '').strip()
         
         if not question:
-            return jsonify({
-                'error': 'Question is required'
-            }), 400
+            return ApiResponse.error(
+                message='Question is required',
+                code=400
+            )
         
         logger.info(f"Received question: {question}")
         
@@ -205,18 +239,21 @@ def chat():
         response = rag_system.ask(question)
         
         # Format response for frontend
-        return jsonify({
-            'success': True,
-            'question': response['question'],
-            'answer': response['answer'],
-            'sources': response['sources']
-        })
+        return ApiResponse.success(
+            data={
+                'question': response.get('question'),
+                'answer': response.get('answer'),
+                'sources': response.get('sources', [])
+            },
+            message='Chat response generated successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error processing chat: {e}", exc_info=True)
-        return jsonify({
-            'error': f'Error processing question: {str(e)}'
-        }), 500
+        return ApiResponse.error(
+            message=f'Error processing question: {str(e)}',
+            code=500
+        )
 
 
 @app.route('/api/search', methods=['POST'])
@@ -228,9 +265,10 @@ def search():
         rag_system = initialize_rag_system()
     
     if rag_system is None:
-        return jsonify({
-            'error': 'RAG system not initialized. Please ensure Qdrant collection exists.'
-        }), 500
+        return ApiResponse.error(
+            message='RAG system not initialized. Please ensure Qdrant collection exists.',
+            code=500
+        )
     
     try:
         data = request.get_json()
@@ -238,9 +276,10 @@ def search():
         top_k = data.get('top_k', 5)
         
         if not query:
-            return jsonify({
-                'error': 'Query is required'
-            }), 400
+            return ApiResponse.error(
+                message='Query is required',
+                code=400
+            )
         
         logger.info(f"Received search query: {query}")
         
@@ -253,17 +292,21 @@ def search():
             # Fallback to regular search
             results = rag_system.search_hotels(query, top_k=top_k)
         
-        return jsonify({
-            'success': True,
-            'query': query,
-            'results': results
-        })
+        return ApiResponse.success(
+            data={
+                'query': query,
+                'results': results,
+                'count': len(results) if isinstance(results, list) else 0
+            },
+            message='Search completed successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error processing search: {e}", exc_info=True)
-        return jsonify({
-            'error': f'Error processing search: {str(e)}'
-        }), 500
+        return ApiResponse.error(
+            message=f'Error processing search: {str(e)}',
+            code=500
+        )
 
 
 @app.route('/api/status', methods=['GET'])
@@ -272,30 +315,35 @@ def status():
     global rag_system
     
     if rag_system is None:
-        return jsonify({
-            'initialized': False,
-            'message': 'RAG system not initialized'
-        })
+        return ApiResponse.success(
+            data={
+                'initialized': False
+            },
+            message='RAG system not initialized'
+        )
     
     try:
         from qdrant_client import QdrantClient
         client = QdrantClient(url=rag_system.qdrant_url)
         collection = client.get_collection(rag_system.collection_name)
         
-        return jsonify({
-            'initialized': True,
-            'collection_name': rag_system.collection_name,
-            'points_count': collection.points_count,
-            'vector_size': collection.config.params.vectors.size,
-            'embedding_model': rag_system.embedding_model,
-            'llm_model': rag_system.llm_model
-        })
+        return ApiResponse.success(
+            data={
+                'initialized': True,
+                'collection_name': rag_system.collection_name,
+                'points_count': collection.points_count,
+                'vector_size': collection.config.params.vectors.size,
+                'embedding_model': rag_system.embedding_model,
+                'llm_model': rag_system.llm_model
+            },
+            message='RAG system status retrieved successfully'
+        )
     except Exception as e:
         logger.error(f"Error getting status: {e}")
-        return jsonify({
-            'initialized': False,
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error getting status: {str(e)}',
+            code=500
+        )
 
 
 if __name__ == '__main__':

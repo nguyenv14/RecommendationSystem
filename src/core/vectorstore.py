@@ -277,26 +277,57 @@ class VectorStoreService:
     def get_point(
         self,
         collection_name: str,
-        point_id: Union[str, int]
+        point_id: Union[str, int],
+        with_vectors: bool = False
     ) -> Optional[Any]:
         """
         Get single point by ID
         
         Args:
             collection_name: Collection name
-            point_id: Point ID
+            point_id: Point ID (can be string or int)
+            with_vectors: Whether to include vectors in response
             
         Returns:
             Point or None
         """
+        # Normalize point_id: Qdrant accepts unsigned integers or UUIDs
+        # Convert numeric strings to int for better compatibility
+        normalized_id = point_id
+        if isinstance(point_id, str):
+            # If it's a numeric string, convert to int
+            if point_id.isdigit():
+                normalized_id = int(point_id)
+            # UUIDs and other non-numeric strings are kept as-is
+        
+        # Try with normalized ID first
         try:
-            return self.client.retrieve(
+            results = self.client.retrieve(
                 collection_name=collection_name,
-                ids=[point_id]
-            )[0]
+                ids=[normalized_id],
+                with_vectors=with_vectors
+            )
+            if results and len(results) > 0:
+                return results[0]
         except Exception as e:
-            logger.error(f"Error getting point {point_id}: {e}")
-            return None
+            # If normalized_id is different from original, try original format
+            if normalized_id != point_id:
+                try:
+                    logger.debug(f"Trying original point ID format: {point_id}")
+                    results = self.client.retrieve(
+                        collection_name=collection_name,
+                        ids=[point_id],
+                        with_vectors=with_vectors
+                    )
+                    if results and len(results) > 0:
+                        return results[0]
+                except Exception as e2:
+                    logger.debug(f"Error trying original ID format: {e2}")
+            
+            logger.error(f"Error getting point {point_id} (normalized: {normalized_id}): {e}")
+        
+        logger.warning(f"Point {point_id} not found in collection {collection_name}")
+        return None
     
     def delete_points(
         self,

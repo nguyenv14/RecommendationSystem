@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Import from src/
 from src.config import get_settings, Collections
-from src.shared import get_logger, setup_logging
+from src.shared import get_logger, setup_logging, ApiResponse
 from src.core import (
     EmbeddingService,
     VectorStoreService,
@@ -165,17 +165,54 @@ def index():
 @app.route('/health')
 @app.route('/api/health')
 def health():
-    """Health check"""
-    return jsonify({
-        'status': 'ok',
-        'version': '3.0',
-        'services': {
-            'rag': rag_service is not None,
-            'recommendation': recommender_service is not None,
-            'embedding': embedding_service is not None,
-            'vectorstore': vectorstore_service is not None
-        }
-    })
+    """
+    Health check
+    Compatible với frontend chat.js (expects rag_initialized & qdrant_connected)
+    """
+    # RAG service initialized (based on service + collection having data)
+    rag_initialized = rag_service is not None
+
+    # Qdrant connection & collection status
+    qdrant_connected = False
+    try:
+        if vectorstore_service is not None:
+            # Thử gọi get_collections() để kiểm tra kết nối
+            collections = vectorstore_service.client.get_collections()  # type: ignore[attr-defined]
+            _ = len(collections.collections)
+            qdrant_connected = True
+    except Exception:
+        qdrant_connected = False
+
+    # Nếu RAG service và Qdrant đều OK, cố gắng kiểm tra collection points
+    if rag_initialized and qdrant_connected:
+        try:
+            info = vectorstore_service.get_collection_info(settings.RAG_COLLECTION_HOTELS)  # type: ignore[arg-type]
+            if info and getattr(info, "points_count", 0) == 0:
+                # Collection tồn tại nhưng chưa có dữ liệu
+                rag_initialized = False
+        except Exception:
+            # Nếu check fail thì giữ nguyên rag_initialized
+            pass
+
+    status = 'ok' if rag_initialized and qdrant_connected else 'error'
+    status_code = 200 if status == 'ok' else 503
+
+    return ApiResponse.success(
+        data={
+            'status': status,
+            'version': '3.0',
+            'rag_initialized': rag_initialized,
+            'qdrant_connected': qdrant_connected,
+            'services': {
+                'rag': rag_service is not None,
+                'recommendation': recommender_service is not None,
+                'embedding': embedding_service is not None,
+                'vectorstore': vectorstore_service is not None
+            }
+        },
+        message='Service health check',
+        code=status_code
+    )
 
 
 @app.route('/api/status')
@@ -184,18 +221,24 @@ def status():
     try:
         rag_stats = rag_service.get_stats() if rag_service else {}
         
-        return jsonify({
-            'version': '3.0',
-            'rag': rag_stats,
-            'collections': {
-                'rag_hotels': settings.RAG_COLLECTION_HOTELS,
-                'rag_coupons': settings.RAG_COLLECTION_HOTELS,
-                'rec_hotels': settings.REC_COLLECTION_HOTELS
-            }
-        })
+        return ApiResponse.success(
+            data={
+                'version': '3.0',
+                'rag': rag_stats,
+                'collections': {
+                    'rag_hotels': settings.RAG_COLLECTION_HOTELS,
+                    'rag_coupons': settings.RAG_COLLECTION_HOTELS,
+                    'rec_hotels': settings.REC_COLLECTION_HOTELS
+                }
+            },
+            message='Service status retrieved successfully'
+        )
     except Exception as e:
         logger.error(f"Error getting status: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error getting status: {str(e)}',
+            code=500
+        )
 
 
 # ==================== RAG Endpoints ====================
@@ -205,14 +248,20 @@ def status():
 def chat():
     """RAG chat endpoint"""
     if not rag_service:
-        return jsonify({'error': 'RAG service not initialized'}), 500
+        return ApiResponse.error(
+            message='RAG service not initialized',
+            code=500
+        )
     
     try:
         data = request.json
         question = data.get('question', '').strip()
         
         if not question:
-            return jsonify({'error': 'Question is required'}), 400
+            return ApiResponse.error(
+                message='Question is required',
+                code=400
+            )
         
         logger.info(f"💬 Chat: {question[:50]}...")
         
@@ -223,14 +272,17 @@ def chat():
             filters=data.get('filters')
         )
         
-        return jsonify({
-            'success': True,
-            **result
-        })
+        return ApiResponse.success(
+            data=result,
+            message='Chat response generated successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error in chat: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error processing chat: {str(e)}',
+            code=500
+        )
 
 
 @app.route('/api/search', methods=['POST'])
@@ -238,14 +290,20 @@ def chat():
 def search():
     """RAG search endpoint (retrieval only)"""
     if not rag_service:
-        return jsonify({'error': 'RAG service not initialized'}), 500
+        return ApiResponse.error(
+            message='RAG service not initialized',
+            code=500
+        )
     
     try:
         data = request.json
         query = data.get('query', '').strip()
         
         if not query:
-            return jsonify({'error': 'Query is required'}), 400
+            return ApiResponse.error(
+                message='Query is required',
+                code=400
+            )
         
         logger.info(f"🔍 Search: {query[:50]}...")
         
@@ -256,16 +314,21 @@ def search():
             filters=data.get('filters')
         )
         
-        return jsonify({
-            'success': True,
-            'query': query,
-            'results': results,
-            'count': len(results)
-        })
+        return ApiResponse.success(
+            data={
+                'query': query,
+                'results': results,
+                'count': len(results)
+            },
+            message='Search completed successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error in search: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error processing search: {str(e)}',
+            code=500
+        )
 
 
 # ==================== Recommendation Endpoints ====================
@@ -275,14 +338,20 @@ def search():
 def recommend_by_query():
     """Recommend hotels by query"""
     if not recommender_service:
-        return jsonify({'error': 'Recommender service not initialized'}), 500
+        return ApiResponse.error(
+            message='Recommender service not initialized',
+            code=500
+        )
     
     try:
         data = request.json
         query = data.get('query', '').strip()
         
         if not query:
-            return jsonify({'error': 'Query is required'}), 400
+            return ApiResponse.error(
+                message='Query is required',
+                code=400
+            )
         
         logger.info(f"🎯 Recommend by query: {query[:50]}...")
         
@@ -293,16 +362,21 @@ def recommend_by_query():
             filters=data.get('filters')
         )
         
-        return jsonify({
-            'success': True,
-            'query': query,
-            'recommendations': recommendations,
-            'count': len(recommendations)
-        })
+        return ApiResponse.success(
+            data={
+                'query': query,
+                'recommendations': recommendations,
+                'count': len(recommendations)
+            },
+            message='Recommendations generated successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error in recommend by query: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error generating recommendations: {str(e)}',
+            code=500
+        )
 
 
 @app.route('/api/recommend/similar/<item_id>', methods=['GET'])
@@ -310,7 +384,10 @@ def recommend_by_query():
 def recommend_similar(item_id):
     """Recommend similar hotels"""
     if not recommender_service:
-        return jsonify({'error': 'Recommender service not initialized'}), 500
+        return ApiResponse.error(
+            message='Recommender service not initialized',
+            code=500
+        )
     
     try:
         top_k = request.args.get('top_k', settings.REC_TOP_K, type=int)
@@ -323,16 +400,21 @@ def recommend_similar(item_id):
             top_k=top_k
         )
         
-        return jsonify({
-            'success': True,
-            'item_id': item_id,
-            'recommendations': recommendations,
-            'count': len(recommendations)
-        })
+        return ApiResponse.success(
+            data={
+                'item_id': item_id,
+                'recommendations': recommendations,
+                'count': len(recommendations)
+            },
+            message='Similar recommendations generated successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error in recommend similar: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error generating similar recommendations: {str(e)}',
+            code=500
+        )
 
 
 @app.route('/api/recommend/popular', methods=['GET'])
@@ -340,7 +422,10 @@ def recommend_similar(item_id):
 def recommend_popular():
     """Recommend popular hotels"""
     if not recommender_service:
-        return jsonify({'error': 'Recommender service not initialized'}), 500
+        return ApiResponse.error(
+            message='Recommender service not initialized',
+            code=500
+        )
     
     try:
         top_k = request.args.get('top_k', settings.REC_TOP_K, type=int)
@@ -352,22 +437,30 @@ def recommend_popular():
             top_k=top_k
         )
         
-        return jsonify({
-            'success': True,
-            'recommendations': recommendations,
-            'count': len(recommendations)
-        })
+        return ApiResponse.success(
+            data={
+                'recommendations': recommendations,
+                'count': len(recommendations)
+            },
+            message='Popular recommendations generated successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error in recommend popular: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error generating popular recommendations: {str(e)}',
+            code=500
+        )
 
 
 @app.route('/api/recommend/hybrid', methods=['POST'])
 def recommend_hybrid():
     """Hybrid recommendation"""
     if not recommender_service:
-        return jsonify({'error': 'Recommender service not initialized'}), 500
+        return ApiResponse.error(
+            message='Recommender service not initialized',
+            code=500
+        )
     
     try:
         data = request.json
@@ -384,15 +477,20 @@ def recommend_hybrid():
             filters=data.get('filters')
         )
         
-        return jsonify({
-            'success': True,
-            'recommendations': recommendations,
-            'count': len(recommendations)
-        })
+        return ApiResponse.success(
+            data={
+                'recommendations': recommendations,
+                'count': len(recommendations)
+            },
+            message='Hybrid recommendations generated successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error in hybrid recommendation: {e}")
-        return jsonify({'error': str(e)}), 500
+        return ApiResponse.error(
+            message=f'Error generating hybrid recommendations: {str(e)}',
+            code=500
+        )
 
 
 if __name__ == '__main__':

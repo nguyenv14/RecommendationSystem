@@ -128,25 +128,20 @@ class RetrieverService:
             top_k = self.default_top_k
         
         try:
-            # Get item vector
-            point = self.vectorstore_service.get_point(collection_name, item_id)
+            # Get item vector (request vectors to avoid re-embedding)
+            point = self.vectorstore_service.get_point(collection_name, item_id, with_vectors=True)
             if point is None:
                 logger.warning(f"Item {item_id} not found in {collection_name}")
                 return []
             
-            # Get vector (may need to retrieve separately)
-            # For now, we'll search by re-embedding if needed
-            # This is a simplified version - in production you'd store vectors
-            
             # Build filter
             qdrant_filter = self._build_filter(filters) if filters else None
             
-            # Search using item's payload for similarity
-            # (This is simplified - you may want to use the item's vector directly)
+            # Search using item's vector for similarity
             if hasattr(point, 'vector') and point.vector:
                 query_vector = point.vector
             else:
-                # Fallback: re-embed item description
+                # Fallback: re-embed item description if vector not available
                 item_text = self._get_item_text(point.payload)
                 query_vector = self.embedding_service.embed_query(item_text)
             
