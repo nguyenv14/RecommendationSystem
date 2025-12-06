@@ -4,11 +4,39 @@
 Flask API Service for Semantic Hotel Recommendation
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from semantic_recommendation_system import SemanticRecommendationSystem
 import pandas as pd
 import logging
 import os
+import sys
+from pathlib import Path
+from typing import Any, Tuple
+
+# Try to import ApiResponse from src/shared, fallback to local implementation
+try:
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from src.shared.response import ApiResponse
+except ImportError:
+    # Local implementation if src/shared not available
+    class ApiResponse:
+        @staticmethod
+        def success(data: Any = None, message: str = "OK", code: int = 200) -> Tuple[Response, int]:
+            return jsonify({
+                "success": True,
+                "code": code,
+                "message": message,
+                "data": data
+            }), code
+        
+        @staticmethod
+        def error(message: str = "Error", code: int = 400, data: Any = None) -> Tuple[Response, int]:
+            return jsonify({
+                "success": False,
+                "code": code,
+                "message": message,
+                "data": data
+            }), code
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,10 +61,12 @@ def initialize_system():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'message': 'Semantic Recommendation Service is running'
-    })
+    return ApiResponse.success(
+        data={
+            'status': 'ok'
+        },
+        message='Semantic Recommendation Service is running'
+    )
 
 @app.route('/api/hotels/process', methods=['POST'])
 def process_hotel():
@@ -60,10 +90,11 @@ def process_hotel():
         
         required_fields = ['hotel_id']
         if not all(field in data for field in required_fields):
-            return jsonify({
-                'error': 'Missing required fields',
-                'required': required_fields
-            }), 400
+            return ApiResponse.error(
+                message='Missing required fields',
+                code=400,
+                data={'required': required_fields}
+            )
         
         # Create hotel dataframe
         hotel_df = pd.DataFrame([data])
@@ -71,17 +102,19 @@ def process_hotel():
         # Process and add hotel
         sys.add_new_hotels(hotel_df)
         
-        return jsonify({
-            'success': True,
-            'message': f'Hotel {data["hotel_id"]} processed successfully',
-            'hotel_id': data['hotel_id']
-        }), 200
+        return ApiResponse.success(
+            data={
+                'hotel_id': data['hotel_id']
+            },
+            message=f'Hotel {data["hotel_id"]} processed successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error processing hotel: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error processing hotel: {str(e)}',
+            code=500
+        )
 
 @app.route('/api/hotels/batch', methods=['POST'])
 def process_hotels_batch():
@@ -101,24 +134,27 @@ def process_hotels_batch():
         data = request.json
         
         if 'hotels' not in data or not isinstance(data['hotels'], list):
-            return jsonify({
-                'error': 'Invalid request. Expected "hotels" array'
-            }), 400
+            return ApiResponse.error(
+                message='Invalid request. Expected "hotels" array',
+                code=400
+            )
         
         hotels_df = pd.DataFrame(data['hotels'])
         sys.add_new_hotels(hotels_df)
         
-        return jsonify({
-            'success': True,
-            'message': f'Processed {len(data["hotels"])} hotels',
-            'count': len(data['hotels'])
-        }), 200
+        return ApiResponse.success(
+            data={
+                'count': len(data['hotels'])
+            },
+            message=f'Processed {len(data["hotels"])} hotels'
+        )
         
     except Exception as e:
         logger.error(f"Error processing hotels batch: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error processing hotels batch: {str(e)}',
+            code=500
+        )
 
 @app.route('/api/hotels/<int:hotel_id>/similar', methods=['GET'])
 def get_similar_hotels(hotel_id):
@@ -134,19 +170,22 @@ def get_similar_hotels(hotel_id):
         
         recommendations = sys.recommend_for_hotel(hotel_id, top_k=top_k)
         
-        return jsonify({
-            'success': True,
-            'hotel_id': hotel_id,
-            'recommendations': recommendations,
-            'count': len(recommendations)
-        }), 200
+        return ApiResponse.success(
+            data={
+                'hotel_id': hotel_id,
+                'recommendations': recommendations,
+                'count': len(recommendations)
+            },
+            message='Similar hotels retrieved successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error getting similar hotels: {e}")
-        return jsonify({
-            'error': str(e),
-            'hotel_id': hotel_id
-        }), 500
+        return ApiResponse.error(
+            message=f'Error getting similar hotels: {str(e)}',
+            code=500,
+            data={'hotel_id': hotel_id}
+        )
 
 @app.route('/api/hotels/search', methods=['POST'])
 def search_hotels():
@@ -164,27 +203,31 @@ def search_hotels():
         data = request.json
         
         if 'query' not in data:
-            return jsonify({
-                'error': 'Missing required field: "query"'
-            }), 400
+            return ApiResponse.error(
+                message='Missing required field: "query"',
+                code=400
+            )
         
         query = data['query']
         top_k = data.get('top_k', 10)
         
         results = sys.search_similar_hotels(query, top_k=top_k)
         
-        return jsonify({
-            'success': True,
-            'query': query,
-            'results': results,
-            'count': len(results)
-        }), 200
+        return ApiResponse.success(
+            data={
+                'query': query,
+                'results': results,
+                'count': len(results)
+            },
+            message='Hotels search completed successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error searching hotels: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error searching hotels: {str(e)}',
+            code=500
+        )
 
 @app.route('/api/hotels/reload', methods=['POST'])
 def reload_database():
@@ -213,18 +256,21 @@ def reload_database():
         # Index hotels
         sys.index_hotels(hotels_df, recreate_collection=recreate)
         
-        return jsonify({
-            'success': True,
-            'message': f'Reloaded {len(hotels_df)} hotels from {csv_path}',
-            'count': len(hotels_df),
-            'recreated': recreate
-        }), 200
+        return ApiResponse.success(
+            data={
+                'count': len(hotels_df),
+                'recreated': recreate,
+                'csv_path': csv_path
+            },
+            message=f'Reloaded {len(hotels_df)} hotels from {csv_path}'
+        )
         
     except Exception as e:
         logger.error(f"Error reloading database: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error reloading database: {str(e)}',
+            code=500
+        )
 
 @app.route('/api/hotels/calculate-distances', methods=['POST'])
 def calculate_distances():
@@ -248,18 +294,20 @@ def calculate_distances():
         output_file = 'hotel_distances.csv'
         distance_df.to_csv(output_file, index=False)
         
-        return jsonify({
-            'success': True,
-            'message': f'Calculated distances for {len(distance_df)} hotel pairs',
-            'output_file': output_file,
-            'count': len(distance_df)
-        }), 200
+        return ApiResponse.success(
+            data={
+                'output_file': output_file,
+                'count': len(distance_df)
+            },
+            message=f'Calculated distances for {len(distance_df)} hotel pairs'
+        )
         
     except Exception as e:
         logger.error(f"Error calculating distances: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error calculating distances: {str(e)}',
+            code=500
+        )
 
 @app.route('/api/hotels/info', methods=['GET'])
 def get_collection_info():
@@ -269,18 +317,21 @@ def get_collection_info():
         
         collection_info = sys.client.get_collection(sys.collection_name)
         
-        return jsonify({
-            'success': True,
-            'collection_name': sys.collection_name,
-            'points_count': collection_info.points_count,
-            'vectors_count': collection_info.config.params.vectors.size if hasattr(collection_info.config.params.vectors, 'size') else None
-        }), 200
+        return ApiResponse.success(
+            data={
+                'collection_name': sys.collection_name,
+                'points_count': collection_info.points_count,
+                'vectors_count': collection_info.config.params.vectors.size if hasattr(collection_info.config.params.vectors, 'size') else None
+            },
+            message='Collection info retrieved successfully'
+        )
         
     except Exception as e:
         logger.error(f"Error getting collection info: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return ApiResponse.error(
+            message=f'Error getting collection info: {str(e)}',
+            code=500
+        )
 
 if __name__ == '__main__':
     port = int(os.getenv('API_PORT', 5000))
