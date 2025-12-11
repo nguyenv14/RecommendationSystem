@@ -196,4 +196,147 @@ class QueryPreprocessor:
             return "location"
         
         return "other"
+    
+    # Intent patterns for detailed extraction
+    INTENT_PATTERNS = {
+        "price": [
+            r"giá\s+tốt", r"giá\s+rẻ", r"giá\s+hợp\s+lý",
+            r"giá\s+phải\s+chăng", r"giá\s+thấp", r"giá\s+cao"
+        ],
+        "location": [
+            r"ở\s+([A-Za-zÀ-ỹ\s]+)", r"tại\s+([A-Za-zÀ-ỹ\s]+)",
+            r"khu\s+vực\s+([A-Za-zÀ-ỹ\s]+)", r"quận\s+([A-Za-zÀ-ỹ\s]+)"
+        ],
+        "amenities": [
+            r"hồ\s+bơi", r"spa", r"gym", r"nhà\s+hàng",
+            r"view\s+biển", r"view\s+sông"
+        ],
+        "rank": [
+            r"(\d+)\s+sao", r"(\d+)\s+star"
+        ]
+    }
+    
+    # Area mapping (based on common area names in Đà Nẵng)
+    AREA_MAPPING = {
+        "ngũ hành sơn": 7,
+        "sơn trà": 1,
+        "hải châu": 2,
+        "liên chiểu": 3,
+        "thanh khê": 4,
+        "cẩm lệ": 5,
+        "hòa vang": 6,
+    }
+    
+    def process(self, query: str) -> Dict:
+        """
+        Process query và extract intent, entities, filters
+        Enhanced version for semantic search
+        
+        Args:
+            query: Original query
+            
+        Returns:
+            Dictionary with processed query information
+        """
+        query_lower = query.lower()
+        
+        # Extract detailed intent
+        intent = self._extract_detailed_intent(query_lower)
+        
+        # Extract entities
+        entities = self._extract_entities(query_lower)
+        
+        # Extract area
+        area_id = self._extract_area(query_lower)
+        
+        return {
+            "original_query": query,
+            "intent": intent,
+            "entities": entities,
+            "area_id": area_id,
+            "filters": self._build_filters(intent, entities, area_id)
+        }
+    
+    def _extract_detailed_intent(self, query: str) -> Dict:
+        """Extract detailed user intent"""
+        intent = {
+            "type": "search",  # default
+            "price_range": None,
+            "amenities": [],
+            "rank": None
+        }
+        
+        # Check price intent
+        if any(re.search(pattern, query) for pattern in self.INTENT_PATTERNS["price"]):
+            if "giá tốt" in query or "giá rẻ" in query or "giá hợp lý" in query:
+                intent["price_range"] = "low"
+            elif "giá cao" in query:
+                intent["price_range"] = "high"
+        
+        # Check amenities
+        for amenity_pattern in self.INTENT_PATTERNS["amenities"]:
+            if re.search(amenity_pattern, query):
+                intent["amenities"].append(amenity_pattern.replace(r"\s+", " "))
+        
+        # Check rank
+        rank_match = re.search(r"(\d+)\s+sao", query)
+        if rank_match:
+            intent["rank"] = int(rank_match.group(1))
+        
+        return intent
+    
+    def _extract_entities(self, query: str) -> List[str]:
+        """Extract entities từ query"""
+        entities = []
+        
+        # Extract location entities
+        location_match = re.search(r"ở\s+([A-Za-zÀ-ỹ\s]+)", query)
+        if location_match:
+            entities.append(location_match.group(1).strip())
+        
+        return entities
+    
+    def _extract_area(self, query: str) -> Optional[int]:
+        """Extract area_id từ query"""
+        query_lower = query.lower()
+        
+        # Normalize query: remove accents and special chars for better matching
+        import unicodedata
+        query_normalized = unicodedata.normalize('NFD', query_lower)
+        query_normalized = ''.join(c for c in query_normalized if unicodedata.category(c) != 'Mn')
+        
+        # Try exact match first
+        for area_name, area_id in self.AREA_MAPPING.items():
+            if area_name in query_lower:
+                return area_id
+        
+        # Try normalized match
+        for area_name, area_id in self.AREA_MAPPING.items():
+            area_normalized = unicodedata.normalize('NFD', area_name)
+            area_normalized = ''.join(c for c in area_normalized if unicodedata.category(c) != 'Mn')
+            if area_normalized in query_normalized:
+                return area_id
+        
+        # Try partial match (e.g., "ngu hanh son" matches "ngũ hành sơn")
+        for area_name, area_id in self.AREA_MAPPING.items():
+            area_words = area_name.split()
+            if all(word in query_lower for word in area_words):
+                return area_id
+        
+        return None
+    
+    def _build_filters(self, intent: Dict, entities: List, area_id: Optional[int]) -> Dict:
+        """Build filter dict từ intent và entities"""
+        filters = {}
+        
+        if area_id:
+            filters["area_id"] = area_id
+        
+        if intent.get("price_range") == "low":
+            filters["max_price"] = 2000000  # Default max price for "giá tốt"
+        
+        if intent.get("rank"):
+            filters["min_rank"] = intent["rank"]
+        
+        return filters
 

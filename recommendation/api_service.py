@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Tuple, List, Dict
 
 # Try to import ApiResponse from src/shared, fallback to local implementation
 try:
@@ -226,6 +226,171 @@ def search_hotels():
         logger.error(f"Error searching hotels: {e}")
         return ApiResponse.error(
             message=f'Error searching hotels: {str(e)}',
+            code=500
+        )
+
+def apply_filters(results: List[Dict], filters: Dict) -> List[Dict]:
+    """Apply filters to search results"""
+    filtered = results
+    
+    logger.debug(f"Applying filters: {filters} to {len(results)} results")
+    
+    # Filter by area_id (convert to int for comparison)
+    if "area_id" in filters:
+        area_id_filter = int(filters["area_id"])
+        before_count = len(filtered)
+        filtered = [
+            r for r in filtered 
+            if int(r.get("payload", {}).get("area_id", 0)) == area_id_filter
+        ]
+        logger.debug(f"Area filter: {before_count} -> {len(filtered)} results")
+    
+    # Filter by max_price
+    if "max_price" in filters:
+        max_price_filter = float(filters["max_price"])
+        before_count = len(filtered)
+        filtered = [
+            r for r in filtered 
+            if float(r.get("payload", {}).get("hotel_price_average", float('inf'))) <= max_price_filter
+        ]
+        logger.debug(f"Price filter: {before_count} -> {len(filtered)} results")
+    
+    # Filter by min_rank
+    if "min_rank" in filters:
+        min_rank_filter = int(filters["min_rank"])
+        before_count = len(filtered)
+        filtered = [
+            r for r in filtered 
+            if int(r.get("payload", {}).get("hotel_rank", 0)) >= min_rank_filter
+        ]
+        logger.debug(f"Rank filter: {before_count} -> {len(filtered)} results")
+    
+    return filtered
+
+def rerank_by_intent(results: List[Dict], processed_query: Dict, top_k: int) -> List[Dict]:
+    """Re-rank results based on query intent"""
+    intent = processed_query.get("intent", {})
+    original_query = processed_query.get("original_query", "").lower()
+    
+    # Boost score for price-related queries
+    if intent.get("price_range") == "low":
+        # Sort by price ascending, then by relevance score
+        results = sorted(
+            results,
+            key=lambda x: (
+                x.get("payload", {}).get("hotel_price_average", float('inf')),
+                -x.get("score", 0)  # Higher score = better
+            )
+        )
+    
+    # Boost score for hotels with matching tags
+    if "giá tốt" in original_query or "giá rẻ" in original_query:
+        for result in results:
+            tags = result.get("payload", {}).get("hotel_tag_keyword", "").lower()
+            if "giá tốt" in tags or "khách sạn giá tốt" in tags:
+                result["score"] = result.get("score", 0) * 1.2  # Boost 20%
+    
+    # Sort by final score
+    results = sorted(results, key=lambda x: x.get("score", 0), reverse=True)
+    
+    return results[:top_k]
+
+@app.route('/api/hotels/semantic-search', methods=['POST'])
+def semantic_search_hotels():
+    """
+    Semantic search với query preprocessing và filtering
+    
+    Request body:
+    {
+        "query": "Tìm kiếm khách sạn ở Ngũ Hành Sơn giá tốt",
+        "top_k": 10,
+        "filters": {
+            "area_id": 7,  # Optional: Ngũ Hành Sơn
+            "max_price": 2000000,  # Optional
+            "min_rank": 3  # Optional
+        }
+    }
+    """
+    try:
+        sys = initialize_system()
+        data = request.json
+        
+        if 'query' not in data:
+            return ApiResponse.error(
+                message='Missing required field: "query"',
+                code=400
+            )
+        
+        query = data['query']
+        top_k = data.get('top_k', 10)
+        filters = data.get('filters', {})
+        
+        # Step 1: Query preprocessing (extract intent, entities)
+        try:
+            from src.core.query_preprocessor import QueryPreprocessor
+            preprocessor = QueryPreprocessor()
+            processed_query = preprocessor.process(query)
+            
+            logger.info(f"Processed query: {processed_query}")
+            
+            # Merge filters from query preprocessing with provided filters
+            if processed_query.get("filters"):
+                filters = {**processed_query["filters"], **filters}
+        except Exception as e:
+            logger.warning(f"Query preprocessing failed: {e}, using original query")
+            processed_query = {"original_query": query, "intent": {}, "filters": filters}
+        
+        logger.info(f"Final filters: {filters}")
+        
+        # Step 2: Semantic search
+        results = sys.search_similar_hotels(
+            query=query,
+            top_k=top_k * 3  # Get more results for filtering (increased from 2x to 3x)
+        )
+        
+        logger.info(f"Semantic search returned {len(results)} results")
+        
+        # Step 3: Apply filters
+        filtered_results = apply_filters(results, filters)
+        
+        logger.info(f"After filtering: {len(filtered_results)} results")
+        
+        # If no results after filtering, try without strict filters
+        if len(filtered_results) == 0 and filters:
+            logger.warning("No results after filtering, trying with relaxed filters")
+            # Try without price filter first
+            relaxed_filters = {k: v for k, v in filters.items() if k != "max_price"}
+            if relaxed_filters:
+                filtered_results = apply_filters(results, relaxed_filters)
+            
+            # If still no results, use original results without any filters
+            if len(filtered_results) == 0:
+                logger.warning("No results with relaxed filters, using original results")
+                filtered_results = results[:top_k * 2]
+        
+        # Step 4: Re-rank based on query intent
+        ranked_results = rerank_by_intent(
+            filtered_results, 
+            processed_query,
+            top_k=top_k
+        )
+        
+        logger.info(f"Final ranked results: {len(ranked_results)}")
+        
+        return ApiResponse.success(
+            data={
+                'query': query,
+                'processed_query': processed_query,
+                'results': ranked_results,
+                'count': len(ranked_results)
+            },
+            message='Semantic search completed successfully'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in semantic search: {e}", exc_info=True)
+        return ApiResponse.error(
+            message=f'Error in semantic search: {str(e)}',
             code=500
         )
 
