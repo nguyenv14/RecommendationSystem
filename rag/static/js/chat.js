@@ -152,7 +152,7 @@ async function handleSend() {
             chatHistory.push({
                 question: data.question,
                 answer: data.answer,
-                sources: data.sources,
+                sources: data.sources ?? [],
                 timestamp: new Date()
             });
         } else {

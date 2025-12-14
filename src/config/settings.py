@@ -38,8 +38,16 @@ class Settings:
         self.LLM_MODEL = os.getenv('LLM_MODEL', Models.LLM_QWEN3)
         
         # ==================== LLM Provider ====================
-        self.LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'ollama')  # 'ollama' or 'lm_studio'
-        self.LM_STUDIO_URL = os.getenv('LM_STUDIO_URL', None)
+        # Default to lm_studio, but can be overridden by environment variable
+        env_llm_provider = os.getenv('LLM_PROVIDER')
+        self.LLM_PROVIDER = env_llm_provider if env_llm_provider else 'lm_studio'  # 'ollama' or 'lm_studio'
+        env_lm_studio_url = os.getenv('LM_STUDIO_URL')
+        self.LM_STUDIO_URL = env_lm_studio_url if env_lm_studio_url else 'http://localhost:1234'
+        
+        # Debug: Log LLM provider configuration at initialization
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"📋 LLM Configuration loaded: provider='{self.LLM_PROVIDER}' (env: {env_llm_provider}), lm_studio_url='{self.LM_STUDIO_URL}' (env: {env_lm_studio_url})")
         
         # ==================== Redis Configuration ====================
         self.REDIS_URL = os.getenv('REDIS_URL', f'redis://localhost:{Ports.REDIS}')

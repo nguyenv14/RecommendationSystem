@@ -6,9 +6,9 @@ Unified Qdrant operations cho cả RAG và Recommendation
 from typing import List, Dict, Optional, Any, Tuple, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    Distance, VectorParams, PointStruct,
+    Distance, VectorParams, SparseVectorParams, PointStruct,
     Filter, FieldCondition, MatchValue,
-    SearchRequest, ScoredPoint
+    SearchRequest, ScoredPoint, Prefetch, SparseVector
 )
 from ..shared import get_logger
 from ..config import Collections
@@ -45,16 +45,18 @@ class VectorStoreService:
         collection_name: str,
         vector_size: int,
         distance: Distance = Distance.COSINE,
-        recreate: bool = False
+        recreate: bool = False,
+        enable_sparse: bool = True
     ) -> bool:
         """
-        Create or recreate collection
+        Create or recreate collection with optional sparse vectors support
         
         Args:
             collection_name: Collection name
             vector_size: Vector dimension
             distance: Distance metric
             recreate: Force recreate if exists
+            enable_sparse: Enable sparse vectors (BM25) for hybrid search
             
         Returns:
             True if successful
@@ -70,11 +72,24 @@ class VectorStoreService:
                     logger.info(f"Collection already exists: {collection_name}")
                     return True
             
-            logger.info(f"Creating collection: {collection_name} (size={vector_size})")
-            self.client.create_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(size=vector_size, distance=distance)
-            )
+            # Build vectors config
+            if enable_sparse:
+                logger.info(f"Creating collection with hybrid search: {collection_name} (dense={vector_size}, sparse=BM25)")
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config={
+                        "dense": VectorParams(size=vector_size, distance=distance)
+                    },
+                    sparse_vectors_config={
+                        "sparse": SparseVectorParams()  # BM25 sparse vector
+                    }
+                )
+            else:
+                logger.info(f"Creating collection: {collection_name} (size={vector_size})")
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(size=vector_size, distance=distance)
+                )
             
             logger.info(f"✅ Collection created: {collection_name}")
             return True
@@ -159,19 +174,23 @@ class VectorStoreService:
         filters: Optional[Filter] = None,
         score_threshold: Optional[float] = None,
         with_payload: bool = True,
-        with_vectors: bool = False
+        with_vectors: bool = False,
+        query_sparse_vector: Optional[Dict[str, float]] = None,
+        prefetch_limit: Optional[int] = None
     ) -> List[ScoredPoint]:
         """
-        Search for similar vectors
+        Search for similar vectors (supports hybrid search with sparse vectors)
         
         Args:
-            query_vector: Query embedding vector
+            query_vector: Dense query embedding vector
             collection_name: Collection to search (uses default if None)
             limit: Number of results
             filters: Optional filters
             score_threshold: Minimum score
             with_payload: Include payload in results
             with_vectors: Include vectors in results
+            query_sparse_vector: Optional sparse vector (BM25) for hybrid search
+            prefetch_limit: Limit for prefetch in hybrid search (default: limit * 2)
             
         Returns:
             List of scored points
@@ -183,17 +202,44 @@ class VectorStoreService:
             raise ValueError("No collection specified and no default collection set")
         
         try:
-            # Use search() method directly (standard API for qdrant-client)
-            # This matches how other files in the codebase use it (rag/core/retriever.py, rag/simple_rag_system.py)
-            results = self.client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=limit,
-                query_filter=filters,
-                score_threshold=score_threshold,
-                with_payload=with_payload,
-                with_vectors=with_vectors
-            )
+            # Hybrid search with prefetch
+            if query_sparse_vector:
+                prefetch_limit = prefetch_limit or (limit * 2)
+                sparse_vec = SparseVector(**query_sparse_vector)
+                
+                prefetch = [
+                    Prefetch(
+                        query=query_vector,
+                        using="dense",
+                        limit=prefetch_limit,
+                    ),
+                    Prefetch(
+                        query=sparse_vec,
+                        using="sparse",
+                        limit=prefetch_limit,
+                    ),
+                ]
+                
+                results = self.client.query_points(
+                    collection_name=collection_name,
+                    prefetch=prefetch,
+                    query_filter=filters,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors
+                )
+            else:
+                # Standard dense vector search
+                results = self.client.search(
+                    collection_name=collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    query_filter=filters,
+                    score_threshold=score_threshold,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors
+                )
             
             logger.debug(f"Search returned {len(results)} results from {collection_name}")
             return results

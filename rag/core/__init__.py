@@ -2,26 +2,17 @@
 Core RAG Components
 
 This package contains the core components of the RAG system:
-- embeddings: Cached embeddings wrapper
-- query_extractor: Keyword extraction from queries
-- retriever: Search and retrieval logic (Layer 2)
-- rag_chain: RAG chain setup for generation (Layer 3)
-- vectorstore: Qdrant vector store helpers
+- query_router: Query routing and classification
+- sql_query_generator: SQL query generation for database queries
 """
 
-from .embeddings import CachedOllamaEmbeddings
-from .query_extractor import QueryExtractor
-from .retriever import HotelRetriever
-from .rag_chain import RAGChain
-from .vectorstore import VectorStoreHelper
+from .query_router import QueryRouter
+from .sql_query_generator import SQLQueryGenerator
 
 __version__ = "1.0.0"
 
 __all__ = [
-    'CachedOllamaEmbeddings',
-    'QueryExtractor',
-    'HotelRetriever',
-    'RAGChain',
-    'VectorStoreHelper',
+    'QueryRouter',
+    'SQLQueryGenerator',
 ]
 

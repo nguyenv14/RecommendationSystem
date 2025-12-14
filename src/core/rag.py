@@ -12,7 +12,7 @@ from .generator import GeneratorService
 from .query_preprocessor import QueryPreprocessor
 from .response_cache import ResponseCache
 from ..shared import get_logger
-from ..config import get_settings, Collections
+from ..config import get_settings
 
 # Import QueryRouter and SQLQueryGenerator
 try:
@@ -87,6 +87,7 @@ class RAGService:
             )
         
         if generator_service is None:
+            logger.info(f"🔧 Creating GeneratorService with LLM_PROVIDER={settings.LLM_PROVIDER}, LM_STUDIO_URL={settings.LM_STUDIO_URL}")
             generator_service = GeneratorService(
                 provider=settings.LLM_PROVIDER,
                 model_name=settings.LLM_MODEL,

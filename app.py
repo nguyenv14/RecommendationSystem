@@ -22,6 +22,7 @@ from src.config import get_settings, Collections
 from src.shared import get_logger, setup_logging, ApiResponse
 from src.core import (
     EmbeddingService,
+    SparseEmbeddingService,
     VectorStoreService,
     RetrieverService,
     GeneratorService,
@@ -48,6 +49,7 @@ CORS(app)
 rag_service = None
 recommender_service = None
 embedding_service = None
+sparse_embedding_service = None
 vectorstore_service = None
 
 
@@ -59,7 +61,7 @@ def ensure_collections_ready():
     logger.info("🔧 Checking Collections")
     logger.info("=" * 80)
     
-    from qdrant_client.models import Distance, VectorParams
+    from qdrant_client.models import Distance, VectorParams, SparseVectorParams
     
     try:
         # Khởi tạo VectorStore để check
@@ -77,18 +79,36 @@ def ensure_collections_ready():
         existing_collections = client.get_collections()
         existing_names = [col.name for col in existing_collections.collections]
         
-        # Tạo collections nếu chưa có
+        # Tạo collections nếu chưa có (với hybrid search support)
         for collection_name, description, vector_size, emoji in required_collections:
             if collection_name not in existing_names:
-                logger.info(f"Creating {emoji} {description} ({collection_name})...")
-                client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(
-                        size=vector_size,  # RAG: 1024 (bge-m3), Recommendation: 384 (MiniLM)
-                        distance=Distance.COSINE
+                logger.info(f"Creating {emoji} {description} ({collection_name}) with hybrid search...")
+                try:
+                    # Create with both dense and sparse vectors for hybrid search
+                    client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config={
+                            "dense": VectorParams(
+                                size=vector_size,  # RAG: 1024 (bge-m3), Recommendation: 1024
+                                distance=Distance.COSINE
+                            )
+                        },
+                        sparse_vectors_config={
+                            "sparse": SparseVectorParams()  # BM25 for keyword search
+                        }
                     )
-                )
-                logger.info(f"✅ Created {collection_name}")
+                    logger.info(f"✅ Created {collection_name} with hybrid search support")
+                except Exception as e:
+                    logger.warning(f"Failed to create with sparse vectors, trying dense only: {e}")
+                    # Fallback to dense only
+                    client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config=VectorParams(
+                            size=vector_size,
+                            distance=Distance.COSINE
+                        )
+                    )
+                    logger.info(f"✅ Created {collection_name} (dense only)")
             else:
                 info = client.get_collection(collection_name)
                 logger.info(f"✅ {emoji} {collection_name}: {info.points_count} points")
@@ -106,7 +126,7 @@ def ensure_collections_ready():
 
 def initialize_services():
     """Initialize all services"""
-    global rag_service, recommender_service, embedding_service, vectorstore_service
+    global rag_service, recommender_service, embedding_service, sparse_embedding_service, vectorstore_service
     
     logger.info("🚀 Initializing services...")
     
@@ -122,6 +142,18 @@ def initialize_services():
             cache_enabled=settings.EMBEDDING_CACHE_ENABLED
         )
         
+        # Initialize sparse embedding service for hybrid search
+        try:
+            sparse_embedding_service = SparseEmbeddingService(
+                model_name="Qdrant/bm25",
+                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+            )
+            logger.info("✅ Sparse embedding service initialized (Hybrid Search enabled)")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize sparse embedding service: {e}")
+            logger.warning("   Falling back to semantic search only")
+            sparse_embedding_service = None
+        
         vectorstore_service = VectorStoreService(
             url=settings.QDRANT_URL
         )
@@ -133,12 +165,14 @@ def initialize_services():
             collection_name=settings.RAG_COLLECTION_HOTELS
         )
         
-        # Bước 4: Initialize Recommendation service
+        # Bước 4: Initialize Recommendation service with hybrid search
         retriever_service = RetrieverService(
             embedding_service=embedding_service,
             vectorstore_service=vectorstore_service,
             default_collection=settings.REC_COLLECTION_HOTELS,
-            default_top_k=settings.REC_TOP_K
+            default_top_k=settings.REC_TOP_K,
+            sparse_embedding_service=sparse_embedding_service,
+            use_hybrid_search=sparse_embedding_service is not None
         )
         
         recommender_service = RecommenderService(
@@ -271,6 +305,16 @@ def chat():
             top_k=data.get('top_k', settings.RAG_TOP_K),
             filters=data.get('filters')
         )
+        
+        # Ensure result has all required fields for frontend
+        if 'answer' not in result or result.get('answer') is None:
+            result['answer'] = "Xin lỗi, không thể tạo câu trả lời."
+        if 'sources' not in result:
+            result['sources'] = []
+        if 'num_sources' not in result:
+            result['num_sources'] = len(result.get('sources', []))
+        if 'question' not in result:
+            result['question'] = question
         
         return ApiResponse.success(
             data=result,
@@ -536,12 +580,135 @@ def semantic_search_hotels():
         
         logger.info(f"Final ranked results: {len(ranked_results)}")
         
+        # Format results for frontend (fetch full hotel data from database)
+        formatted_results = []
+        if ranked_results:
+            try:
+                from sqlalchemy import create_engine, text
+                import pandas as pd
+                
+                # Get hotel IDs from results
+                hotel_ids = [str(result.get('id')) for result in ranked_results if result.get('id')]
+                
+                if hotel_ids:
+                    # Fetch full hotel data from database
+                    engine = create_engine(
+                        f"mysql+pymysql://{settings.MYSQL_USER}:{settings.MYSQL_PASSWORD}@"
+                        f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}",
+                        pool_pre_ping=True
+                    )
+                    
+                    # Build query with IN clause (include evaluate data)
+                    hotel_ids_str = ','.join([str(hid) for hid in hotel_ids])
+                    query = f"""
+                        SELECT 
+                            h.*, 
+                            a.area_name as hotel_area,
+                            COALESCE(AVG(e.evaluate_star), 0) as evaluate_avg,
+                            COUNT(e.evaluate_id) as evaluate_count,
+                            CASE 
+                                WHEN COALESCE(AVG(e.evaluate_star), 0) >= 9 THEN 'Tuyệt vời'
+                                WHEN COALESCE(AVG(e.evaluate_star), 0) >= 8 THEN 'Rất tốt'
+                                WHEN COALESCE(AVG(e.evaluate_star), 0) >= 7 THEN 'Tốt'
+                                WHEN COALESCE(AVG(e.evaluate_star), 0) >= 6 THEN 'Khá'
+                                ELSE 'Trung bình'
+                            END as evaluate_status
+                        FROM tbl_hotel h
+                        LEFT JOIN tbl_area a ON h.area_id = a.area_id
+                        LEFT JOIN tbl_evaluate e ON h.hotel_id = e.hotel_id
+                        WHERE h.hotel_id IN ({hotel_ids_str}) AND h.hotel_status = 1
+                        GROUP BY h.hotel_id, a.area_name
+                    """
+                    
+                    hotels_df = pd.read_sql(text(query), engine)
+                    engine.dispose()
+                    
+                    # Create a map of hotel_id -> hotel data
+                    hotels_map = {}
+                    for _, hotel in hotels_df.iterrows():
+                        hotel_id = int(hotel['hotel_id'])
+                        hotels_map[hotel_id] = hotel.to_dict()
+                    
+                    # Format results maintaining order from ranked_results
+                    for result in ranked_results:
+                        hotel_id = result.get('id')
+                        if hotel_id in hotels_map:
+                            hotel = hotels_map[hotel_id]
+                            # Format hotel data for frontend
+                            hotel_data = {
+                                'hotel_id': int(hotel.get('hotel_id', hotel_id)),
+                                'hotel_name': str(hotel.get('hotel_name', f'Hotel {hotel_id}')),
+                                'hotel_desc': str(hotel.get('hotel_desc', '')),
+                                'hotel_rank': int(hotel.get('hotel_rank', 0)),
+                                'hotel_price': float(hotel.get('hotel_price', 0)),
+                                'hotel_price_sale': float(hotel.get('hotel_price_sale', hotel.get('hotel_price', 0))),
+                                'hotel_price_average': float(hotel.get('hotel_price_average', 0)),
+                                'hotel_price_final': float(hotel.get('hotel_price_sale', hotel.get('hotel_price', 0))),
+                                'hotel_image': str(hotel.get('hotel_image', '') or ''),
+                                'hotel_area': str(hotel.get('hotel_area', '') or ''),
+                                'area_id': int(hotel.get('area_id', 0)),
+                                'coupon_code': str(hotel.get('coupon_code', '') or ''),
+                                'coupon_discount': int(hotel.get('coupon_discount', 0)),
+                                'evaluate': {
+                                    'avg': float(hotel.get('evaluate_avg', 0) or 0),
+                                    'status': str(hotel.get('evaluate_status', '') or 'Trung bình'),
+                                    'count': int(hotel.get('evaluate_count', 0) or 0)
+                                },
+                                'score': float(result.get('score', 0))
+                            }
+                            formatted_results.append(hotel_data)
+                        else:
+                            # Fallback if hotel not found in DB
+                            payload = result.get('payload', {})
+                            hotel_data = {
+                                'hotel_id': hotel_id,
+                                'hotel_name': payload.get('hotel_name', f'Hotel {hotel_id}'),
+                                'hotel_desc': payload.get('hotel_desc', ''),
+                                'hotel_rank': payload.get('hotel_rank', 0),
+                                'hotel_price': payload.get('hotel_price_average', 0),
+                                'hotel_price_sale': payload.get('hotel_price_average', 0),
+                                'hotel_price_average': payload.get('hotel_price_average', 0),
+                                'hotel_price_final': payload.get('hotel_price_average', 0),
+                                'hotel_image': '',
+                                'hotel_area': '',
+                                'area_id': payload.get('area_id', 0),
+                                'coupon_code': '',
+                                'coupon_discount': 0,
+                                'evaluate': {'avg': 0, 'status': '', 'count': 0},
+                                'score': float(result.get('score', 0))
+                            }
+                            formatted_results.append(hotel_data)
+            except Exception as e:
+                logger.error(f"Error fetching full hotel data: {e}")
+                # Fallback to payload data only
+                for result in ranked_results:
+                    payload = result.get('payload', {})
+                    hotel_data = {
+                        'hotel_id': result.get('id'),
+                        'hotel_name': payload.get('hotel_name', f'Hotel {result.get("id")}'),
+                        'hotel_desc': payload.get('hotel_desc', ''),
+                        'hotel_rank': payload.get('hotel_rank', 0),
+                        'hotel_price': payload.get('hotel_price_average', 0),
+                        'hotel_price_sale': payload.get('hotel_price_average', 0),
+                        'hotel_price_average': payload.get('hotel_price_average', 0),
+                        'hotel_price_final': payload.get('hotel_price_average', 0),
+                        'hotel_image': '',
+                        'hotel_area': '',
+                        'area_id': payload.get('area_id', 0),
+                        'coupon_code': '',
+                        'coupon_discount': 0,
+                        'evaluate': {'avg': 0, 'status': '', 'count': 0},
+                        'score': float(result.get('score', 0))
+                    }
+                    formatted_results.append(hotel_data)
+        
         return ApiResponse.success(
             data={
                 'query': query,
                 'processed_query': processed_query,
-                'results': ranked_results,
-                'count': len(ranked_results)
+                'results': formatted_results,  # Keep for backward compatibility
+                'items': formatted_results,  # Frontend expects 'items'
+                'count': len(formatted_results)
             },
             message='Semantic search completed successfully'
         )
@@ -671,6 +838,14 @@ def recommend_hybrid():
 if __name__ == '__main__':
     logger.info("="*70)
     logger.info("🏨 Unified Hotel Recommendation & RAG System v3.0")
+    logger.info("="*70)
+    logger.info(f"🤖 LLM Provider: {settings.LLM_PROVIDER}")
+    if settings.LLM_PROVIDER == 'lm_studio':
+        logger.info(f"   LM Studio URL: {settings.LM_STUDIO_URL}")
+        logger.info(f"   LLM Model: {settings.LLM_MODEL}")
+    else:
+        logger.info(f"   Ollama URL: {settings.OLLAMA_URL}")
+        logger.info(f"   LLM Model: {settings.LLM_MODEL}")
     logger.info("="*70)
     
     # Initialize services

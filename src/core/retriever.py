@@ -6,6 +6,7 @@ Unified retrieval logic cho cả RAG và Recommendation
 from typing import List, Dict, Optional, Any, Union
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from .embeddings import EmbeddingService
+from .sparse_embeddings import SparseEmbeddingService
 from .vectorstore import VectorStoreService
 from ..shared import get_logger
 
@@ -23,23 +24,32 @@ class RetrieverService:
         embedding_service: EmbeddingService,
         vectorstore_service: VectorStoreService,
         default_collection: Optional[str] = None,
-        default_top_k: int = 5
+        default_top_k: int = 5,
+        sparse_embedding_service: Optional[SparseEmbeddingService] = None,
+        use_hybrid_search: bool = True
     ):
         """
         Initialize retriever service
         
         Args:
-            embedding_service: Embedding service instance
+            embedding_service: Embedding service instance (dense vectors)
             vectorstore_service: Vector store service instance
             default_collection: Default collection to search
             default_top_k: Default number of results
+            sparse_embedding_service: Optional sparse embedding service (BM25)
+            use_hybrid_search: Enable hybrid search (semantic + keyword)
         """
         self.embedding_service = embedding_service
         self.vectorstore_service = vectorstore_service
+        self.sparse_embedding_service = sparse_embedding_service
+        self.use_hybrid_search = use_hybrid_search and sparse_embedding_service is not None
         self.default_collection = default_collection
         self.default_top_k = default_top_k
         
-        logger.info(f"✅ RetrieverService initialized")
+        if self.use_hybrid_search:
+            logger.info(f"✅ RetrieverService initialized with Hybrid Search (Semantic + Keyword)")
+        else:
+            logger.info(f"✅ RetrieverService initialized (Semantic only)")
     
     def retrieve(
         self,
@@ -47,10 +57,11 @@ class RetrieverService:
         collection_name: Optional[str] = None,
         top_k: Optional[int] = None,
         filters: Optional[Dict[str, Any]] = None,
-        score_threshold: Optional[float] = None
+        score_threshold: Optional[float] = None,
+        use_hybrid: Optional[bool] = None
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve similar documents by query text
+        Retrieve similar documents by query text (supports hybrid search)
         
         Args:
             query: Query text
@@ -58,6 +69,7 @@ class RetrieverService:
             top_k: Number of results
             filters: Filters dict (e.g. {"document_type": "hotel"})
             score_threshold: Minimum similarity score
+            use_hybrid: Override hybrid search setting (None = use default)
             
         Returns:
             List of retrieved documents with scores
@@ -68,21 +80,49 @@ class RetrieverService:
         if top_k is None:
             top_k = self.default_top_k
         
+        # Determine if using hybrid search
+        use_hybrid_search = use_hybrid if use_hybrid is not None else self.use_hybrid_search
+        
         # Build Qdrant filter from dict
         qdrant_filter = self._build_filter(filters) if filters else None
         
         try:
-            # Embed query
+            # Embed query (dense vector)
             query_vector = self.embedding_service.embed_query(query)
             
+            # Generate sparse vector if using hybrid search
+            query_sparse_vector = None
+            if use_hybrid_search and self.sparse_embedding_service:
+                try:
+                    sparse_dict = self.sparse_embedding_service.embed_query(query)
+                    if sparse_dict:
+                        query_sparse_vector = sparse_dict
+                        logger.debug(f"Generated sparse vector with {len(sparse_dict)} tokens")
+                except Exception as e:
+                    logger.warning(f"Failed to generate sparse vector, falling back to semantic only: {e}")
+                    use_hybrid_search = False
+            
             # Search
-            results = self.vectorstore_service.search(
-                query_vector=query_vector,
-                collection_name=collection_name,
-                limit=top_k,
-                filters=qdrant_filter,
-                score_threshold=score_threshold
-            )
+            if use_hybrid_search and query_sparse_vector:
+                logger.debug(f"Using hybrid search (semantic + keyword) for query: '{query[:50]}...'")
+                results = self.vectorstore_service.search(
+                    query_vector=query_vector,
+                    collection_name=collection_name,
+                    limit=top_k,
+                    filters=qdrant_filter,
+                    score_threshold=score_threshold,
+                    query_sparse_vector=query_sparse_vector,
+                    prefetch_limit=top_k * 2  # Get more candidates for merging
+                )
+            else:
+                logger.debug(f"Using semantic search only for query: '{query[:50]}...'")
+                results = self.vectorstore_service.search(
+                    query_vector=query_vector,
+                    collection_name=collection_name,
+                    limit=top_k,
+                    filters=qdrant_filter,
+                    score_threshold=score_threshold
+                )
             
             # Format results
             documents = []
@@ -94,11 +134,14 @@ class RetrieverService:
                 }
                 documents.append(doc)
             
-            logger.info(f"Retrieved {len(documents)} documents for query: '{query[:50]}...'")
+            search_type = "hybrid" if use_hybrid_search and query_sparse_vector else "semantic"
+            logger.info(f"Retrieved {len(documents)} documents using {search_type} search for query: '{query[:50]}...'")
             return documents
             
         except Exception as e:
             logger.error(f"Error retrieving documents: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     def retrieve_similar_items(

@@ -48,6 +48,11 @@ pydantic-core>=2.14.0
 # accelerate==0.25.0
 # safetensors==0.4.1
 
+# ==================== Sparse Embeddings (BM25) for Hybrid Search ====================
+# FastEmbed for fast sparse vector generation (BM25)
+# Note: Version 0.2.11 doesn't exist, using 0.2.7 (latest 0.2.x compatible with Python 3.10)
+fastembed==0.2.7
+
 # ==================== Caching ====================
 redis==5.0.1
 hiredis==2.3.2

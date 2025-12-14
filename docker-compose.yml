@@ -10,7 +10,8 @@ services:
       - "6334:6334"  # gRPC API
     volumes:
       - qdrant_storage:/qdrant/storage
-      - ./rag/qdrant_config:/qdrant/config  # Optional: custom config
+      # Optional: custom config (only mount if directory exists and has files)
+      # - ./rag/qdrant_config:/qdrant/config
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__SERVICE__HTTP_PORT=6333
@@ -73,7 +74,8 @@ services:
       - "3308:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./rag/myhotel.sql:/docker-entrypoint-initdb.d/myhotel.sql  # Auto-import SQL
+      # Auto-import SQL (use root myhotel.sql if rag/myhotel.sql doesn't exist)
+      - ./myhotel.sql:/docker-entrypoint-initdb.d/myhotel.sql:ro
     environment:
       - MYSQL_ROOT_PASSWORD=root
       - MYSQL_DATABASE=myhotel
@@ -106,47 +108,102 @@ services:
       - unified_network
 
   # ==================== Unified API Service (RAG + Recommendation) ====================
-  # Uncomment below to run API in Docker
-  # unified_api:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.unified
-  #   container_name: unified_api
-  #   ports:
-  #     - "5000:5000"
-  #   volumes:
-  #     - ./datasets_extracted:/app/datasets_extracted
-  #     - ./rag:/app/rag
-  #     - ./recommendation:/app/recommendation
-  #     - ./processed:/app/processed
-  #   environment:
-  #     - QDRANT_URL=http://qdrant:6333
-  #     - OLLAMA_URL=http://ollama:11434
-  #     - REDIS_URL=redis://redis:6379
-  #     - MYSQL_HOST=mysql
-  #     - MYSQL_PORT=3306
-  #     - MYSQL_USER=root
-  #     - MYSQL_PASSWORD=root
-  #     - MYSQL_DATABASE=myhotel
-  #     - PORT=5000
-  #     - DEBUG=False
-  #     - EMBEDDING_MODEL=bge-m3
-  #     - LLM_MODEL=qwen3
-  #     - COLLECTION_NAME=hotels
-  #     - LLM_PROVIDER=ollama
-  #     - AUTO_INDEX_COUPONS=true
-  #   depends_on:
-  #     qdrant:
-  #       condition: service_healthy
-  #     mysql:
-  #       condition: service_healthy
-  #     ollama:
-  #       condition: service_started
-  #     redis:
-  #       condition: service_healthy
-  #   restart: unless-stopped
-  #   networks:
-  #     - unified_network
+  unified_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unified_api
+    ports:
+      - "5000:5000"
+    volumes:
+      # Mount data directories for indexing (optional)
+      - ./datasets_extracted:/app/datasets_extracted:ro
+      - ./processed:/app/processed:ro
+      # Mount cache directory for persistence
+      - embedding_cache:/app/.embedding_cache
+      - ./rag/qdrant_config:/qdrant/config
+      - ./src:/app/src:rw
+      - ./recommendation:/app/recommendation:rw
+      - ./scripts:/app/scripts:rw
+      - ./setup_collections.py:/app/setup_collections.py:rw
+      - ./index_with_hybrid.py:/app/index_with_hybrid.py:rw
+      - ./app.py:/app/app.py:rw
+      - ./core:/app/core:rw
+      - ./shared:/app/shared:rw
+      - ./config.py:/app/config.py:rw
+      - ./logger.py:/app/logger.py:rw
+      - ./utils.py:/app/utils.py:rw
+      - ./logs:/app/logs
+    environment:
+      # Service Configuration
+      - PORT=5000
+      - HOST=0.0.0.0
+      - DEBUG=False
+      - SECRET_KEY=unified-service-secret-key-change-in-production
+      
+      # Qdrant Vector Database
+      - QDRANT_URL=http://qdrant:6333
+      
+      # Collections Configuration
+      - RAG_COLLECTION_HOTELS=hotels_rag
+      - RAG_COLLECTION_COUPONS=coupons_rag
+      - REC_COLLECTION_HOTELS=hotels_recommendation
+      - COLLECTION_NAME=hotels
+      
+      # Ollama Configuration (for embeddings only)
+      # Windows/Mac: use host.docker.internal
+      # Linux: may need to use 172.17.0.1 or add extra_hosts
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - EMBEDDING_MODEL=bge-m3
+      
+      # LLM Configuration (using LM Studio for qwen3)
+      - LLM_MODEL=qwen3
+      - LLM_PROVIDER=lm_studio
+      - LM_STUDIO_URL=http://host.docker.internal:1234
+      
+      # Redis Cache
+      - REDIS_URL=redis://redis:6379
+      - REDIS_ENABLED=true
+      
+      # MySQL Database
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=root
+      - MYSQL_DATABASE=myhotel
+      
+      # RAG Configuration
+      - AUTO_INDEX_COUPONS=false
+      - RAG_TOP_K=5
+      - RAG_CHUNK_SIZE=1000
+      - RAG_CHUNK_OVERLAP=200
+      
+      # Recommendation Configuration
+      - REC_TOP_K=10
+      - REC_USE_OLLAMA=true
+      
+      # Performance Configuration
+      - EMBEDDING_CACHE_ENABLED=true
+      - MAX_WORKERS=4
+      
+      # Auto-index data on first run (set to true to auto-index)
+      - AUTO_INDEX_DATA=false
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - unified_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 volumes:
   qdrant_storage:
@@ -161,6 +218,9 @@ volumes:
   mysql_data:
     driver: local
     name: mysql_unified_data
+  embedding_cache:
+    driver: local
+    name: unified_api_embedding_cache
 
 networks:
   unified_network:

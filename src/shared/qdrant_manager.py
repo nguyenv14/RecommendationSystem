@@ -6,9 +6,9 @@ Centralized Qdrant client management
 from typing import List, Dict, Optional, Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    Distance, VectorParams, PointStruct,
+    Distance, VectorParams, SparseVectorParams, PointStruct,
     Filter, FieldCondition, MatchValue,
-    SearchRequest, CollectionInfo
+    SearchRequest, CollectionInfo, VectorsConfig, Prefetch, SparseVector
 )
 from .logger import get_logger
 
@@ -37,16 +37,18 @@ class QdrantManager:
         collection_name: str,
         vector_size: int,
         distance: Distance = Distance.COSINE,
-        recreate: bool = False
+        recreate: bool = False,
+        enable_sparse: bool = True
     ) -> bool:
         """
-        Create collection if not exists
+        Create collection if not exists with optional sparse vectors support
         
         Args:
             collection_name: Name of the collection
             vector_size: Vector dimension size
             distance: Distance metric
             recreate: Force recreate collection
+            enable_sparse: Enable sparse vectors (BM25) for hybrid search
             
         Returns:
             True if created or already exists
@@ -63,11 +65,25 @@ class QdrantManager:
                     logger.info(f"Collection already exists: {collection_name}")
                     return True
             
-            logger.info(f"Creating collection: {collection_name} (size={vector_size})")
-            self.client.create_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(size=vector_size, distance=distance)
-            )
+            # Build vectors config
+            if enable_sparse:
+                logger.info(f"Creating collection with hybrid search: {collection_name} (dense={vector_size}, sparse=BM25)")
+                # Create collection with both dense and sparse vectors
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config={
+                        "dense": VectorParams(size=vector_size, distance=distance)
+                    },
+                    sparse_vectors_config={
+                        "sparse": SparseVectorParams()  # BM25 sparse vector
+                    }
+                )
+            else:
+                logger.info(f"Creating collection: {collection_name} (size={vector_size})")
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(size=vector_size, distance=distance)
+                )
             logger.info(f"✅ Collection created: {collection_name}")
             return True
             
@@ -166,29 +182,56 @@ class QdrantManager:
         query_vector: List[float],
         limit: int = 10,
         filter_conditions: Optional[Filter] = None,
-        score_threshold: Optional[float] = None
+        score_threshold: Optional[float] = None,
+        query_sparse_vector: Optional[Dict[str, float]] = None,
+        prefetch: Optional[Dict] = None
     ) -> List[Any]:
         """
-        Search for similar vectors
+        Search for similar vectors (supports hybrid search with sparse vectors)
         
         Args:
             collection_name: Name of the collection
-            query_vector: Query vector
+            query_vector: Dense query vector
             limit: Number of results
             filter_conditions: Optional filter
             score_threshold: Minimum score threshold
+            query_sparse_vector: Optional sparse vector (BM25) for hybrid search
+            prefetch: Optional prefetch config for hybrid search
             
         Returns:
             List of search results
         """
         try:
-            results = self.client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=limit,
-                query_filter=filter_conditions,
-                score_threshold=score_threshold
-            )
+            # Build query
+            if query_sparse_vector and prefetch:
+                # Hybrid search: use prefetch with both dense and sparse
+                results = self.client.query_points(
+                    collection_name=collection_name,
+                    prefetch=prefetch,
+                    query_filter=filter_conditions,
+                    limit=limit,
+                    score_threshold=score_threshold
+                )
+            elif query_sparse_vector:
+                # Search with sparse vector only
+                sparse_vec = SparseVector(**query_sparse_vector)
+                results = self.client.query_points(
+                    collection_name=collection_name,
+                    query=sparse_vec,
+                    query_filter=filter_conditions,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    using="sparse"
+                )
+            else:
+                # Standard dense vector search
+                results = self.client.search(
+                    collection_name=collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    query_filter=filter_conditions,
+                    score_threshold=score_threshold
+                )
             return results
         except Exception as e:
             logger.error(f"Error searching in {collection_name}: {e}")

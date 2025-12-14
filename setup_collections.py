@@ -50,15 +50,33 @@ def create_collections(vectorstore: VectorStoreService):
                 info = client.get_collection(collection_name)
                 logger.info(f"✅ {emoji} {description} ({collection_name}): {info.points_count} points")
             else:
-                # Create collection
-                client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(
-                        size=vector_size,
-                        distance=Distance.COSINE
+                # Create collection with hybrid search support (dense + sparse)
+                try:
+                    from qdrant_client.models import SparseVectorParams
+                    client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config={
+                            "dense": VectorParams(
+                                size=vector_size,
+                                distance=Distance.COSINE
+                            )
+                        },
+                        sparse_vectors_config={
+                            "sparse": SparseVectorParams()  # BM25 for keyword search
+                        }
                     )
-                )
-                logger.info(f"✅ {emoji} {description} ({collection_name}): Created")
+                    logger.info(f"✅ {emoji} {description} ({collection_name}): Created with hybrid search")
+                except Exception as e:
+                    logger.warning(f"Failed to create with sparse vectors: {e}, trying dense only")
+                    # Fallback to dense only
+                    client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config=VectorParams(
+                            size=vector_size,
+                            distance=Distance.COSINE
+                        )
+                    )
+                    logger.info(f"✅ {emoji} {description} ({collection_name}): Created (dense only)")
                 
         except Exception as e:
             logger.error(f"❌ Error creating {collection_name}: {e}")
@@ -81,12 +99,13 @@ def index_rag_data():
         
         # Initialize RAG system
         logger.info("Initializing RAG system...")
+        settings = get_settings()
         rag = SimpleRAGSystem(
-            collection_name="hotels_rag",
-            qdrant_url="http://localhost:6333",
-            ollama_url="http://localhost:11434",
-            embedding_model="bge-m3",
-            llm_model="qwen3"
+            collection_name=settings.RAG_COLLECTION_HOTELS,
+            qdrant_url=settings.QDRANT_URL,
+            ollama_url=settings.OLLAMA_URL,
+            embedding_model=settings.EMBEDDING_MODEL,
+            llm_model=settings.LLM_MODEL
         )
         
         # Index hotels
@@ -140,13 +159,14 @@ def index_recommendation_data():
         
         # Initialize recommendation system
         logger.info("Initializing recommendation system...")
+        settings = get_settings()
         rec_system = SemanticRecommendationSystem(
-            model_name='bge-m3',  # Use bge-m3 for Ollama (better for Vietnamese)
-            qdrant_url="http://localhost:6333",
+            model_name=settings.EMBEDDING_MODEL,  # Use bge-m3 for Ollama (better for Vietnamese)
+            qdrant_url=settings.QDRANT_URL,
             use_ollama=True,  # Always use Ollama (no PyTorch needed)
-            ollama_url="http://localhost:11434"
+            ollama_url=settings.OLLAMA_URL
         )
-        rec_system.collection_name = "hotels_recommendation"
+        rec_system.collection_name = settings.REC_COLLECTION_HOTELS
         
         # Fetch hotels from database using SQLAlchemy engine
         logger.info("Fetching hotels from database...")
@@ -230,10 +250,12 @@ def index_recommendation_data():
                     logger.warning(f"Skipping hotel {metadata['hotel_id']}: invalid embedding (NaN/Inf)")
                     continue
                 
-                # Create point
+                # Create point (with sparse vector if available)
+                # Note: For hybrid search, sparse vectors should be added during indexing
+                # This is a basic version - use index_with_hybrid.py for full hybrid support
                 point = PointStruct(
                     id=metadata['hotel_id'],
-                    vector=embedding_list,
+                    vector=embedding_list,  # Dense vector only
                     payload=metadata
                 )
                 valid_points.append(point)
@@ -310,8 +332,9 @@ def main():
             db_count = engine.execute(text(query)).scalar()
             engine.dispose()
             hotels_collection = None
+            settings = get_settings()
             for col in collections.collections:
-                if col.name == "hotels_recommendation":
+                if col.name == settings.REC_COLLECTION_HOTELS:
                     hotels_collection = client.get_collection(col.name)
                     break
             qdrant_count = hotels_collection.points_count if hotels_collection else 0

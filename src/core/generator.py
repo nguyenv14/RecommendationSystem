@@ -41,6 +41,13 @@ class GeneratorService:
         self.model_name = model_name
         self.temperature = temperature
         
+        # Log provider configuration
+        logger.info(f"🔧 Initializing GeneratorService with provider: {provider}")
+        if provider == "lm_studio":
+            logger.info(f"   LM Studio URL: {lm_studio_url}")
+        elif provider == "ollama":
+            logger.info(f"   Ollama URL: {ollama_url}")
+        
         # Initialize LLM
         if provider == "ollama":
             self.llm = Ollama(
@@ -53,6 +60,8 @@ class GeneratorService:
         elif provider == "lm_studio":
             # LM Studio uses OpenAI-compatible API but doesn't need real API key
             # Theo RAG_FLOW_EXPLANATION.md: max_tokens=2048, temperature=0.3
+            if not lm_studio_url:
+                raise ValueError("LM_STUDIO_URL is required when LLM_PROVIDER is 'lm_studio'")
             try:
                 self.llm = ChatOpenAI(
                     model=model_name,
@@ -98,6 +107,8 @@ class GeneratorService:
         Returns:
             Generated answer
         """
+        logger.debug(f"🔧 Generating with provider: {self.provider}, model: {self.model_name}")
+        
         if prompt_template is None:
             prompt_template = self._get_default_prompt()
         
@@ -114,11 +125,12 @@ class GeneratorService:
             # Generate
             answer = chain.run(context=context, question=query)
             
-            logger.info(f"Generated answer for query: '{query[:50]}...'")
+            logger.info(f"✅ Generated answer for query: '{query[:50]}...' (provider: {self.provider})")
             return answer.strip()
             
         except Exception as e:
-            logger.error(f"Error generating answer: {e}")
+            logger.error(f"❌ Error generating answer with provider '{self.provider}': {e}")
+            logger.error(f"   Model: {self.model_name}, LLM type: {type(self.llm).__name__}")
             return f"Xin lỗi, tôi gặp lỗi khi xử lý câu hỏi: {str(e)}"
     
     def generate_from_documents(
