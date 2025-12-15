@@ -38,3 +38,4 @@ interactions_parquet.snappy
 Thumbs.db
 
 rag/venv_rag/
+.embedding_cache/*

@@ -39,15 +39,30 @@ class Settings:
         
         # ==================== LLM Provider ====================
         # Default to lm_studio, but can be overridden by environment variable
+        # Supported providers: 'lm_studio', 'ollama', 'openrouter'
         env_llm_provider = os.getenv('LLM_PROVIDER')
-        self.LLM_PROVIDER = env_llm_provider if env_llm_provider else 'lm_studio'  # 'ollama' or 'lm_studio'
+        self.LLM_PROVIDER = env_llm_provider if env_llm_provider else 'lm_studio'
+
+        # LM Studio (OpenAI-compatible local server)
         env_lm_studio_url = os.getenv('LM_STUDIO_URL')
         self.LM_STUDIO_URL = env_lm_studio_url if env_lm_studio_url else 'http://localhost:1234'
-        
-        # Debug: Log LLM provider configuration at initialization
+
+        # OpenRouter configuration (for cloud models like qwen/qwen2.5-vl-72b-instruct)
+        # IMPORTANT: set these only via environment variables, never hard-code API keys.
+        self.OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+        self.OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'qwen/qwen2.5-vl-72b-instruct')
+        self.OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api')
+
+        # Debug: Log LLM provider configuration at initialization (without exposing secrets)
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"📋 LLM Configuration loaded: provider='{self.LLM_PROVIDER}' (env: {env_llm_provider}), lm_studio_url='{self.LM_STUDIO_URL}' (env: {env_lm_studio_url})")
+        logger.info(
+            "📋 LLM Configuration loaded: "
+            f"provider='{self.LLM_PROVIDER}' (env: {env_llm_provider}), "
+            f"lm_studio_url='{self.LM_STUDIO_URL}' (env: {env_lm_studio_url}), "
+            f"openrouter_model='{self.OPENROUTER_MODEL}', "
+            f"openrouter_base='{self.OPENROUTER_BASE_URL}'"
+        )
         
         # ==================== Redis Configuration ====================
         self.REDIS_URL = os.getenv('REDIS_URL', f'redis://localhost:{Ports.REDIS}')

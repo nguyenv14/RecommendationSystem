@@ -134,6 +134,9 @@ services:
       - ./logger.py:/app/logger.py:rw
       - ./utils.py:/app/utils.py:rw
       - ./logs:/app/logs
+      # Mount static files and templates for real-time updates
+      - ./rag/static:/app/rag/static:ro
+      - ./rag/templates:/app/rag/templates:ro
     environment:
       # Service Configuration
       - PORT=5000

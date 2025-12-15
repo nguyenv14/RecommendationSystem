@@ -25,21 +25,28 @@ class GeneratorService:
         model_name: str = "qwen3",
         ollama_url: str = "http://localhost:11434",
         lm_studio_url: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
+        openrouter_model: Optional[str] = None,
+        openrouter_base_url: str = "https://openrouter.ai/api",
         temperature: float = 0.3  # Theo RAG_FLOW_EXPLANATION.md: temperature=0.3
     ):
         """
         Initialize generator service
         
         Args:
-            provider: 'ollama' or 'lm_studio'
+            provider: 'ollama', 'lm_studio' hoặc 'openrouter'
             model_name: Model name
             ollama_url: Ollama URL
             lm_studio_url: LM Studio URL
+            openrouter_api_key: OpenRouter API key (đọc từ env)
+            openrouter_model: Tên model trên OpenRouter (vd: 'qwen/qwen2.5-vl-72b-instruct')
+            openrouter_base_url: OpenRouter base url (mặc định: https://openrouter.ai/api)
             temperature: Generation temperature (default: 0.3 theo RAG_FLOW_EXPLANATION.md)
         """
         self.provider = provider
         self.model_name = model_name
         self.temperature = temperature
+        self.openrouter_model = openrouter_model or model_name
         
         # Log provider configuration
         logger.info(f"🔧 Initializing GeneratorService with provider: {provider}")
@@ -47,6 +54,8 @@ class GeneratorService:
             logger.info(f"   LM Studio URL: {lm_studio_url}")
         elif provider == "ollama":
             logger.info(f"   Ollama URL: {ollama_url}")
+        elif provider == "openrouter":
+            logger.info(f"   OpenRouter model: {self.openrouter_model}")
         
         # Initialize LLM
         if provider == "ollama":
@@ -84,11 +93,35 @@ class GeneratorService:
                     timeout=120.0
                 )
                 logger.info(f"Using LM Studio LLM (base_url): {model_name} (temperature={temperature}, max_tokens=2048)")
-            
+
+        elif provider == "openrouter":
+            # Sử dụng OpenRouter (OpenAI-compatible) qua ChatOpenAI
+            if not openrouter_api_key:
+                raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER is 'openrouter'")
+            try:
+                # OpenRouter dùng OpenAI-compatible schema, base /v1
+                self.llm = ChatOpenAI(
+                    model=self.openrouter_model,
+                    openai_api_base=f"{openrouter_base_url}/v1",
+                    openai_api_key=openrouter_api_key,
+                    temperature=temperature,
+                    max_tokens=2048,
+                    timeout=120.0,
+                    extra_headers={
+                        # Các header này là optional cho ranking trên openrouter.ai
+                        "HTTP-Referer": "http://localhost",  # có thể override bằng env nếu muốn
+                        "X-Title": "Hotel-RAG-System",
+                    },
+                )
+                logger.info(f"Using OpenRouter LLM: {self.openrouter_model} (temperature={temperature}, max_tokens=2048)")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize OpenRouter LLM: {e}")
+                raise
+
         else:
             raise ValueError(f"Unknown provider: {provider}")
         
-        logger.info(f"✅ GeneratorService initialized: {provider}/{model_name} (temperature={temperature}, max_tokens=2048)")
+        logger.info(f"✅ GeneratorService initialized: {provider}/{self.openrouter_model if provider == 'openrouter' else model_name} (temperature={temperature}, max_tokens=2048)")
     
     def generate(
         self,

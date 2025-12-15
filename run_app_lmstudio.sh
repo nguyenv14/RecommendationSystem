@@ -75,33 +75,82 @@ echo -e "${BLUE}⏳ Waiting for services...${NC}"
 sleep 5
 
 # ============================================
+# Step 1.5: Load .env file early (before checking services)
+# ============================================
+echo -e "${BLUE}📋 Loading environment variables from .env...${NC}"
+
+# Function to load .env file safely
+load_env_file() {
+    if [ -f ".env" ]; then
+        echo -e "${GREEN}✅ Found .env file, loading...${NC}"
+        # Export variables from .env file, ignoring comments and empty lines
+        set -a
+        source .env 2>/dev/null || {
+            # Fallback: parse .env manually if source fails
+            while IFS= read -r line || [ -n "$line" ]; do
+                # Skip comments and empty lines
+                [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                [[ -z "${line// }" ]] && continue
+                # Export variable (handle values with spaces)
+                if [[ "$line" =~ ^[[:space:]]*([^=]+)=(.*)$ ]]; then
+                    key="${BASH_REMATCH[1]}"
+                    value="${BASH_REMATCH[2]}"
+                    # Remove quotes if present
+                    value="${value#\"}"
+                    value="${value%\"}"
+                    value="${value#\'}"
+                    value="${value%\'}"
+                    export "$key=$value" 2>/dev/null || true
+                fi
+            done < .env
+        }
+        set +a
+        echo -e "${GREEN}✅ Environment variables loaded from .env${NC}"
+    else
+        echo -e "${YELLOW}⚠️  No .env file found, will use defaults${NC}"
+        echo -e "${YELLOW}   Tip: Copy env.example to .env and configure${NC}"
+    fi
+}
+
+# Load .env file early
+load_env_file
+
+# ============================================
 # Step 2: Check LM Studio
 # ============================================
-echo -e "${BLUE}🤖 Checking LM Studio...${NC}"
-
-LM_STUDIO_URL="http://127.0.0.1:1234"
-
-if curl -s "$LM_STUDIO_URL/v1/models" > /dev/null 2>&1; then
-    echo -e "${GREEN}✅ LM Studio is running${NC}"
-    
-    # List models
-    echo -e "${BLUE}📋 Available models:${NC}"
-    MODELS=$(curl -s "$LM_STUDIO_URL/v1/models" | $PYTHON_CMD -c "import sys, json; models = json.load(sys.stdin); print('\n'.join([f'   - {m[\"id\"]}' for m in models.get('data', [])]))" 2>/dev/null)
-    if [ -n "$MODELS" ]; then
-        echo "$MODELS"
-    else
-        echo "   (Could not list models)"
-    fi
+# Check if LLM_PROVIDER is set to openrouter (from .env or shell env)
+if [ "${LLM_PROVIDER:-lm_studio}" = "openrouter" ]; then
+    echo -e "${BLUE}🤖 Using OpenRouter, skipping LM Studio check...${NC}"
 else
-    echo -e "${RED}❌ LM Studio is not running!${NC}"
-    echo ""
-    echo "Please start LM Studio:"
-    echo "  1. Open LM Studio"
-    echo "  2. Load model: qwen/qwen3-4b-2507"
-    echo "  3. Go to 'Developer' tab"
-    echo "  4. Click 'Start Server' at $LM_STUDIO_URL"
-    echo ""
-    exit 1
+    echo -e "${BLUE}🤖 Checking LM Studio...${NC}"
+    
+    # Use LM_STUDIO_URL from .env or default
+    LM_STUDIO_URL="${LM_STUDIO_URL:-http://127.0.0.1:1234}"
+    
+    if curl -s "$LM_STUDIO_URL/v1/models" > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ LM Studio is running${NC}"
+        
+        # List models
+        echo -e "${BLUE}📋 Available models:${NC}"
+        MODELS=$(curl -s "$LM_STUDIO_URL/v1/models" | $PYTHON_CMD -c "import sys, json; models = json.load(sys.stdin); print('\n'.join([f'   - {m[\"id\"]}' for m in models.get('data', [])]))" 2>/dev/null)
+        if [ -n "$MODELS" ]; then
+            echo "$MODELS"
+        else
+            echo "   (Could not list models)"
+        fi
+    else
+        echo -e "${RED}❌ LM Studio is not running!${NC}"
+        echo ""
+        echo "Please start LM Studio:"
+        echo "  1. Open LM Studio"
+        echo "  2. Load model: qwen/qwen3-4b-2507"
+        echo "  3. Go to 'Developer' tab"
+        echo "  4. Click 'Start Server' at $LM_STUDIO_URL"
+        echo ""
+        echo "Or switch to OpenRouter by setting LLM_PROVIDER=openrouter in .env file"
+        echo ""
+        exit 1
+    fi
 fi
 
 # Check Ollama (for embeddings)
@@ -240,25 +289,63 @@ else
 fi
 
 # ============================================
-# Step 4: Set environment variables - LM STUDIO
+# Step 4: Set environment variables (with defaults)
 # ============================================
-export QDRANT_URL="http://localhost:6333"
-export OLLAMA_URL="http://localhost:11434"  # Still for embeddings
-export PORT="5000"
-export AUTO_INDEX_DATA="false"
+# Note: .env file was already loaded in Step 1.5
+# Here we just set defaults for any missing variables
 
-# ⭐ LM STUDIO CONFIGURATION
-export LLM_PROVIDER="lm_studio"
-export LM_STUDIO_URL="http://127.0.0.1:1234"
-export LLM_MODEL="qwen/qwen3-4b-2507"
+echo -e "${BLUE}📋 Configuring environment variables...${NC}"
 
-# LM Studio doesn't need real API key, but set dummy to avoid errors
-export OPENAI_API_KEY="lm-studio-dummy-key"
+# Set default values if not already set from .env or environment
+export QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
+export OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"  # Still for embeddings
+export PORT="${PORT:-5000}"
+export AUTO_INDEX_DATA="${AUTO_INDEX_DATA:-false}"
+
+# ============================================
+# LLM Provider Configuration
+# ============================================
+# Lấy từ .env hoặc environment variables, fallback về defaults
+
+# LLM Provider (lm_studio, openrouter, hoặc ollama)
+export LLM_PROVIDER="${LLM_PROVIDER:-lm_studio}"
+
+if [ "$LLM_PROVIDER" = "openrouter" ]; then
+    # OpenRouter configuration
+    export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+    export OPENROUTER_MODEL="${OPENROUTER_MODEL:-qwen/qwen2.5-vl-72b-instruct}"
+    export OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL:-https://openrouter.ai/api}"
+    export LLM_MODEL="${LLM_MODEL:-${OPENROUTER_MODEL}}"
+    
+    if [ -z "$OPENROUTER_API_KEY" ]; then
+        echo -e "${RED}❌ ERROR: OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter${NC}"
+        echo -e "${YELLOW}   Please set OPENROUTER_API_KEY in .env file or environment${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ Using OpenRouter: ${OPENROUTER_MODEL}${NC}"
+elif [ "$LLM_PROVIDER" = "lm_studio" ]; then
+    # LM Studio configuration
+    export LM_STUDIO_URL="${LM_STUDIO_URL:-http://127.0.0.1:1234}"
+    export LLM_MODEL="${LLM_MODEL:-qwen/qwen3-4b-2507}"
+    # LM Studio doesn't need real API key, but set dummy to avoid errors
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-lm-studio-dummy-key}"
+    echo -e "${GREEN}✅ Using LM Studio: ${LLM_MODEL} at ${LM_STUDIO_URL}${NC}"
+elif [ "$LLM_PROVIDER" = "ollama" ]; then
+    # Ollama configuration
+    export LLM_MODEL="${LLM_MODEL:-qwen3}"
+    echo -e "${GREEN}✅ Using Ollama: ${LLM_MODEL}${NC}"
+else
+    echo -e "${YELLOW}⚠️  Unknown LLM_PROVIDER: $LLM_PROVIDER, defaulting to lm_studio${NC}"
+    export LLM_PROVIDER="lm_studio"
+    export LM_STUDIO_URL="${LM_STUDIO_URL:-http://127.0.0.1:1234}"
+    export LLM_MODEL="${LLM_MODEL:-qwen/qwen3-4b-2507}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-lm-studio-dummy-key}"
+fi
 
 # Prevent PyTorch from loading
-export TRANSFORMERS_OFFLINE=1
-export HF_HUB_OFFLINE=1
-export TORCH_DISABLE_IMPORT=1
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TORCH_DISABLE_IMPORT="${TORCH_DISABLE_IMPORT:-1}"
 
 # ============================================
 # Step 5: Setup Collections
@@ -276,14 +363,23 @@ echo ""
 echo -e "${YELLOW}💡 Tip: Collections có data rồi sẽ không tải lại${NC}"
 
 # ============================================
-# Step 6: Start Application with LM Studio
+# Step 6: Start Application
 # ============================================
 echo ""
 echo -e "${GREEN}=========================================="
-echo "🎉 Starting Application - LM Studio Mode"
+echo "🎉 Starting Application"
 echo "==========================================${NC}"
 echo -e "${BLUE}📍 URL: http://localhost:5000${NC}"
-echo -e "${YELLOW}🤖 LLM: LM Studio (qwen/qwen3-4b-2507)${NC}"
+
+# Display LLM provider info
+if [ "$LLM_PROVIDER" = "openrouter" ]; then
+    echo -e "${YELLOW}🤖 LLM: OpenRouter (${OPENROUTER_MODEL:-$LLM_MODEL})${NC}"
+elif [ "$LLM_PROVIDER" = "lm_studio" ]; then
+    echo -e "${YELLOW}🤖 LLM: LM Studio (${LLM_MODEL})${NC}"
+else
+    echo -e "${YELLOW}🤖 LLM: ${LLM_PROVIDER} (${LLM_MODEL})${NC}"
+fi
+
 echo -e "${YELLOW}🔢 Embeddings: Ollama (bge-m3)${NC}"
 echo -e "${YELLOW}💡 Press Ctrl+C to stop${NC}"
 echo ""

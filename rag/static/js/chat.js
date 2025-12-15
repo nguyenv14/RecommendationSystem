@@ -140,23 +140,31 @@ async function handleSend() {
         });
         
         const data = await response.json();
-        
+
         // Remove typing indicator
         removeTypingIndicator(typingId);
-        
-        if (data.success) {
+
+        // Normalize response shape to support both old and new API formats
+        const payload = data.data || data;
+        const success = typeof data.success === 'boolean' ? data.success : !!payload.success;
+        const answer = payload.answer ?? data.answer;
+        const sources = payload.sources ?? data.sources ?? [];
+        const questionText = payload.question ?? question;
+        const errorMessage = payload.error || data.error;
+
+        if (success && answer !== undefined && answer !== null) {
             // Add bot response
-            addMessage('bot', data.answer, data.sources);
-            
+            addMessage('bot', String(answer), sources);
+
             // Update chat history
             chatHistory.push({
-                question: data.question,
-                answer: data.answer,
-                sources: data.sources ?? [],
+                question: questionText,
+                answer: String(answer),
+                sources: sources,
                 timestamp: new Date()
             });
         } else {
-            addMessage('bot', `❌ Lỗi: ${data.error || 'Không thể xử lý câu hỏi'}`);
+            addMessage('bot', `❌ Lỗi: ${errorMessage || 'Không thể xử lý câu hỏi'}`);
         }
     } catch (error) {
         console.error('Chat error:', error);
@@ -223,8 +231,16 @@ function addMessage(type, content, sources = null) {
 
 // Format Message
 function formatMessage(content) {
+    // Handle undefined, null, or empty content
+    if (content === undefined || content === null) {
+        return '<p>Không có nội dung</p>';
+    }
+    
+    // Convert to string if not already
+    let text = String(content);
+    
     // Convert line breaks to <br>
-    let formatted = content.replace(/\n/g, '<br>');
+    let formatted = text.replace(/\n/g, '<br>');
     
     // Wrap paragraphs
     formatted = formatted.split('<br><br>').map(p => {

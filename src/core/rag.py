@@ -87,16 +87,24 @@ class RAGService:
             )
         
         if generator_service is None:
-            logger.info(f"🔧 Creating GeneratorService with LLM_PROVIDER={settings.LLM_PROVIDER}, LM_STUDIO_URL={settings.LM_STUDIO_URL}")
+            logger.info(
+                f"🔧 Creating GeneratorService with "
+                f"LLM_PROVIDER={settings.LLM_PROVIDER}, "
+                f"LM_STUDIO_URL={settings.LM_STUDIO_URL}"
+            )
+            # Truyền thêm cấu hình OpenRouter (nếu provider=openrouter thì sẽ dùng)
             generator_service = GeneratorService(
                 provider=settings.LLM_PROVIDER,
                 model_name=settings.LLM_MODEL,
                 ollama_url=settings.OLLAMA_URL,
-                lm_studio_url=settings.LM_STUDIO_URL
+                lm_studio_url=settings.LM_STUDIO_URL,
+                openrouter_api_key=settings.OPENROUTER_API_KEY,
+                openrouter_model=settings.OPENROUTER_MODEL,
+                openrouter_base_url=settings.OPENROUTER_BASE_URL,
             )
         
         self.embedding = embedding_service
-        self.vectorstore_service = vectorstore_service
+        self.vectorstore_service = vectorstore_service 
         self.retriever_service = retriever_service
         self.generator = generator_service
         self.collection_name = collection_name or settings.RAG_COLLECTION_HOTELS
@@ -121,6 +129,10 @@ class RAGService:
         
         if SQLQueryGenerator is not None:
             try:
+                # Với các câu hỏi thống kê đơn giản (đếm, trung bình, max/min),
+                # rule-based SQL đã đủ chính xác và **nhanh hơn rất nhiều** so với gọi LLM.
+                # Vì lý do hiệu năng, mặc định TẮT LLM cho SQL generator.
+                # Nếu sau này cần các câu SQL phức tạp hơn, có thể đổi use_llm=True.
                 llm_for_sql = generator_service.llm if hasattr(generator_service, 'llm') else None
                 self.sql_generator = SQLQueryGenerator(use_llm=True, llm=llm_for_sql)
                 logger.info("✅ SQL Query Generator initialized in RAGService")
