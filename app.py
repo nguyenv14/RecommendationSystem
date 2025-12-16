@@ -7,7 +7,17 @@ Single application cho cả RAG chatbot và Recommendation
 Version 3.0 - Clean architecture với src/
 """
 
+# IMPORTANT: Unset HF_HUB_OFFLINE FIRST, before any imports
+# This allows fastembed to download the BM25 model if needed
+# fastembed checks this env var when the module is imported
 import os
+_original_hf_offline = os.environ.get('HF_HUB_OFFLINE')
+if _original_hf_offline == '1':
+    # Temporarily unset to allow model download
+    if 'HF_HUB_OFFLINE' in os.environ:
+        del os.environ['HF_HUB_OFFLINE']
+    print("⚠️  Temporarily unset HF_HUB_OFFLINE to allow BM25 model download")
+
 import sys
 import socket
 from pathlib import Path
@@ -143,16 +153,21 @@ def initialize_services():
         )
         
         # Initialize sparse embedding service for hybrid search
-        try:
-            sparse_embedding_service = SparseEmbeddingService(
-                model_name="Qdrant/bm25",
-                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
-            )
+        sparse_embedding_service = SparseEmbeddingService(
+            model_name="Qdrant/bm25",
+            cache_enabled=settings.EMBEDDING_CACHE_ENABLED,
+            allow_download=True  # Allow downloading model even if HF_HUB_OFFLINE is set
+        )
+        
+        if sparse_embedding_service.is_available:
             logger.info("✅ Sparse embedding service initialized (Hybrid Search enabled)")
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to initialize sparse embedding service: {e}")
-            logger.warning("   Falling back to semantic search only")
-            sparse_embedding_service = None
+        else:
+            logger.warning("⚠️  Sparse embedding model not available")
+            logger.warning("   Hybrid search will fallback to semantic search only")
+            logger.warning("   To enable hybrid search:")
+            logger.warning("   1. Ensure internet connection")
+            logger.warning("   2. Unset HF_HUB_OFFLINE: export HF_HUB_OFFLINE=0")
+            logger.warning("   3. Or download model manually: python -c 'from fastembed import SparseTextEmbedding; SparseTextEmbedding(\"Qdrant/bm25\")'")
         
         vectorstore_service = VectorStoreService(
             url=settings.QDRANT_URL
@@ -172,7 +187,7 @@ def initialize_services():
             default_collection=settings.REC_COLLECTION_HOTELS,
             default_top_k=settings.REC_TOP_K,
             sparse_embedding_service=sparse_embedding_service,
-            use_hybrid_search=sparse_embedding_service is not None
+            use_hybrid_search=sparse_embedding_service is not None and sparse_embedding_service.is_available
         )
         
         recommender_service = RecommenderService(
@@ -183,8 +198,16 @@ def initialize_services():
         
         logger.info("✅ All services initialized successfully")
         
+        # Restore HF_HUB_OFFLINE if it was originally set
+        if _original_hf_offline == '1':
+            os.environ['HF_HUB_OFFLINE'] = '1'
+            logger.debug("Restored HF_HUB_OFFLINE=1")
+        
     except Exception as e:
         logger.error(f"❌ Error initializing services: {e}")
+        # Restore HF_HUB_OFFLINE even on error
+        if _original_hf_offline == '1':
+            os.environ['HF_HUB_OFFLINE'] = '1'
         raise
 
 

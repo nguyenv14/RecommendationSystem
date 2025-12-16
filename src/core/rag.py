@@ -214,9 +214,10 @@ class RAGService:
                 else:
                     logger.warning("⚠️  SQL generator not available, using RAG fallback")
             elif query_type == "hybrid":
-                logger.warning("⚠️  Hybrid queries not yet fully implemented, using SQL for now")
-                if self.sql_generator is not None:
-                    return self._ask_with_sql(question, classification)
+                # Hybrid queries: Ưu tiên semantic RAG (vì thường là tìm kiếm + filter)
+                # Chỉ dùng SQL nếu thực sự cần đếm/thống kê
+                logger.info("🔍 Hybrid query detected, using semantic RAG (better for search queries)")
+                # Continue with normal RAG flow below (don't route to SQL)
         
         # Step 1: Check Response Cache (for semantic queries)
         if use_cache:

@@ -6,7 +6,9 @@ Uses fastembed for fast sparse vector generation
 
 from typing import List, Dict, Optional, Union
 import hashlib
-from fastembed import SparseTextEmbedding, SparseEmbedding
+import os
+# Lazy import - import only when needed to allow unsetting HF_HUB_OFFLINE first
+# from fastembed import SparseTextEmbedding, SparseEmbedding
 from ..shared import get_logger
 from .persistent_cache import PersistentEmbeddingCache
 
@@ -23,7 +25,8 @@ class SparseEmbeddingService:
         self,
         model_name: str = "Qdrant/bm25",
         cache_enabled: bool = True,
-        cache_dir: Optional[str] = None
+        cache_dir: Optional[str] = None,
+        allow_download: bool = True
     ):
         """
         Initialize sparse embedding service
@@ -32,19 +35,57 @@ class SparseEmbeddingService:
             model_name: FastEmbed sparse model name (default: Qdrant/bm25)
             cache_enabled: Enable caching
             cache_dir: Cache directory path
+            allow_download: Allow downloading model if not available (temporarily unset HF_HUB_OFFLINE)
         """
         self.model_name = model_name
         self.cache_enabled = cache_enabled
         self.cache_dir = cache_dir
+        self.model = None
+        self.is_available = False
         
         # Initialize model
         try:
             logger.info(f"Loading sparse embedding model: {model_name}")
-            self.model = SparseTextEmbedding(model_name=model_name)
-            logger.info(f"✅ SparseEmbeddingService initialized with {model_name}")
+            
+            # IMPORTANT: Unset HF_HUB_OFFLINE BEFORE importing fastembed
+            # fastembed checks this env var when the module is imported
+            original_offline = None
+            if allow_download:
+                original_offline = os.environ.get('HF_HUB_OFFLINE')
+                if original_offline:
+                    logger.info("Temporarily unsetting HF_HUB_OFFLINE to allow model download...")
+                    del os.environ['HF_HUB_OFFLINE']
+                    # Also unset in parent process if possible
+                    if 'HF_HUB_OFFLINE' in os.environ:
+                        del os.environ['HF_HUB_OFFLINE']
+            
+            # Lazy import - import only now, after unsetting HF_HUB_OFFLINE
+            try:
+                from fastembed import SparseTextEmbedding, SparseEmbedding
+            except ImportError as e:
+                logger.error(f"fastembed not installed: {e}")
+                logger.error("Install with: pip install fastembed")
+                raise
+            
+            try:
+                self.model = SparseTextEmbedding(model_name=model_name)
+                self.is_available = True
+                logger.info(f"✅ SparseEmbeddingService initialized with {model_name}")
+            finally:
+                # Restore original HF_HUB_OFFLINE value
+                if original_offline is not None:
+                    os.environ['HF_HUB_OFFLINE'] = original_offline
+                    logger.debug(f"Restored HF_HUB_OFFLINE={original_offline}")
+                    
         except Exception as e:
-            logger.error(f"Error loading sparse embedding model: {e}")
-            raise
+            logger.warning(f"⚠️  Failed to load sparse embedding model: {e}")
+            logger.warning("   Hybrid search will fallback to semantic search only")
+            logger.warning("   To enable hybrid search:")
+            logger.warning("   1. Run: python download_bm25_model.py")
+            logger.warning("   2. Or unset HF_HUB_OFFLINE: export HF_HUB_OFFLINE=0")
+            self.model = None
+            self.is_available = False
+            # Don't raise - allow graceful fallback
         
         # Initialize cache if enabled
         self.cache = None
@@ -62,7 +103,12 @@ class SparseEmbeddingService:
             
         Returns:
             Dictionary mapping token indices to weights (sparse vector)
+            Returns empty dict if model not available
         """
+        if not self.is_available or self.model is None:
+            logger.debug("Sparse embedding model not available, returning empty dict")
+            return {}
+        
         if not text or not text.strip():
             return {}
         
@@ -74,6 +120,9 @@ class SparseEmbeddingService:
                 return cached
         
         try:
+            # Import here if not already imported
+            from fastembed import SparseEmbedding
+            
             # Generate sparse embedding
             # fastembed returns list of SparseEmbedding, we take the first one
             embeddings: List[SparseEmbedding] = list(self.model.embed([text]))
@@ -113,7 +162,12 @@ class SparseEmbeddingService:
             
         Returns:
             List of sparse vectors (dicts)
+            Returns list of empty dicts if model not available
         """
+        if not self.is_available or self.model is None:
+            logger.debug("Sparse embedding model not available, returning empty dicts")
+            return [{}] * len(texts) if texts else []
+        
         if not texts:
             return []
         

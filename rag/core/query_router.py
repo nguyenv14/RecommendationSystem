@@ -52,6 +52,9 @@ class QueryRouter:
     # Patterns cho câu hỏi ngữ nghĩa (semantic)
     SEMANTIC_PATTERNS = [
         r"khách\s+sạn\s+nào",
+        r"nên\s+chọn",
+        r"nên\s+đặt",
+        r"nên\s+ở",
         r"tìm\s+khách\s+sạn",
         r"giới\s+thiệu",
         r"mô\s+tả",
@@ -60,6 +63,10 @@ class QueryRouter:
         r"tiện\s+ích",
         r"có\s+gì",
         r"như\s+thế\s+nào",
+        r"view\s+sông",
+        r"view\s+biển",
+        r"gần\s+",
+        r"có\s+view",
     ]
     
     # Confidence threshold để quyết định có gọi LLM không
@@ -137,6 +144,11 @@ class QueryRouter:
                 semantic_matches.append(pattern)
         
         # Determine type
+        # Priority: Nếu có semantic patterns rõ ràng (như "nên chọn", "khách sạn nào") → semantic
+        # Chỉ hybrid khi có cả statistical keywords (bao nhiêu, đếm) VÀ semantic keywords
+        strong_semantic_patterns = [r"nên\s+chọn", r"khách\s+sạn\s+nào", r"tìm\s+khách\s+sạn"]
+        has_strong_semantic = any(re.search(pattern, question_lower) for pattern in strong_semantic_patterns)
+        
         if statistical_score > 0 and semantic_score == 0:
             # Pure statistical
             confidence = min(0.9, 0.5 + statistical_score * 0.1)
@@ -146,19 +158,28 @@ class QueryRouter:
                 "reason": f"Matched {statistical_score} statistical patterns: {matched_patterns[:2]}",
                 "method": "rule-based"
             }
-        elif statistical_score == 0 and semantic_score > 0:
-            # Pure semantic
-            confidence = min(0.9, 0.5 + semantic_score * 0.1)
+        elif has_strong_semantic or (semantic_score > 0 and statistical_score == 0):
+            # Pure semantic (ưu tiên nếu có strong semantic patterns)
+            confidence = min(0.95, 0.7 + semantic_score * 0.1) if has_strong_semantic else min(0.9, 0.5 + semantic_score * 0.1)
             return {
                 "type": "semantic",
                 "confidence": confidence,
-                "reason": f"Matched {semantic_score} semantic patterns",
+                "reason": f"Matched {semantic_score} semantic patterns" + (" (strong semantic)" if has_strong_semantic else ""),
                 "method": "rule-based"
             }
         elif statistical_score > 0 and semantic_score > 0:
-            # Hybrid: có thể cần cả 2
+            # Hybrid: chỉ khi có cả statistical keywords (bao nhiêu, đếm) VÀ không phải strong semantic
             # Ví dụ: "Có bao nhiêu khách sạn 5 sao có hồ bơi?" 
             # → Cần SQL để đếm, nhưng cũng cần RAG để hiểu "hồ bơi"
+            # Nhưng "nên chọn khách sạn nào có hồ bơi?" → semantic, không phải hybrid
+            if has_strong_semantic:
+                # Nếu có strong semantic pattern → ưu tiên semantic
+                return {
+                    "type": "semantic",
+                    "confidence": 0.85,
+                    "reason": f"Strong semantic pattern detected, ignoring statistical patterns",
+                    "method": "rule-based"
+                }
             return {
                 "type": "hybrid",
                 "confidence": 0.7,
@@ -188,8 +209,10 @@ Phân loại câu hỏi sau thành một trong các loại:
    - Ví dụ: "Giá trung bình của khách sạn 5 sao là bao nhiêu?"
    - Ví dụ: "Có khách sạn nào ở Sơn Trà không?"
 
-2. "semantic": Câu hỏi tìm kiếm, mô tả, thông tin chi tiết
+2. "semantic": Câu hỏi tìm kiếm, mô tả, thông tin chi tiết, đề xuất
    - Ví dụ: "Khách sạn nào có view biển đẹp?"
+   - Ví dụ: "Nên chọn khách sạn nào có view sông?"
+   - Ví dụ: "Tôi muốn có view sông và gần cầu rồng thì nên chọn khách sạn nào?"
    - Ví dụ: "Giới thiệu khách sạn 5 sao ở Đà Nẵng"
    - Ví dụ: "Khách sạn nào có spa và hồ bơi?"
 

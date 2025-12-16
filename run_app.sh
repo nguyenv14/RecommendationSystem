@@ -122,7 +122,9 @@ export AUTO_INDEX_DATA="false"  # Chỉ tạo collections, không index data
 
 # Prevent PyTorch from loading (not needed for Ollama embeddings)
 export TRANSFORMERS_OFFLINE=1
-export HF_HUB_OFFLINE=1
+# NOTE: HF_HUB_OFFLINE is temporarily unset in app.py to allow BM25 model download
+# The app will restore it after initialization
+# export HF_HUB_OFFLINE=1  # Commented out to allow hybrid search
 export TORCH_DISABLE_IMPORT=1
 
 # ============================================

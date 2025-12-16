@@ -344,7 +344,9 @@ fi
 
 # Prevent PyTorch from loading
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+# NOTE: HF_HUB_OFFLINE is temporarily unset in app.py to allow BM25 model download
+# The app will restore it after initialization
+# export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"  # Commented out to allow hybrid search
 export TORCH_DISABLE_IMPORT="${TORCH_DISABLE_IMPORT:-1}"
 
 # ============================================
@@ -383,6 +385,13 @@ fi
 echo -e "${YELLOW}🔢 Embeddings: Ollama (bge-m3)${NC}"
 echo -e "${YELLOW}💡 Press Ctrl+C to stop${NC}"
 echo ""
+
+# Temporarily unset HF_HUB_OFFLINE to allow BM25 model download for hybrid search
+# app.py will handle restoring it after initialization
+if [ "${HF_HUB_OFFLINE:-}" = "1" ]; then
+    echo -e "${YELLOW}⚠️  Temporarily unsetting HF_HUB_OFFLINE to allow BM25 model download...${NC}"
+    unset HF_HUB_OFFLINE
+fi
 
 # Run app
 python app.py
