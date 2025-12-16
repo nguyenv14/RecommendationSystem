@@ -404,7 +404,9 @@ class SimpleRAGSystem:
                                    chunk_overlap: int = 50,  # Giảm overlap
                                    incremental: bool = True,
                                    recreate_collection: bool = False,
-                                   batch_size: int = 50):  # Tăng batch_size để nhanh hơn
+                                   batch_size: int = 50,  # Tăng batch_size để nhanh hơn
+                                   index_rooms: bool = True,  # Index rooms và type_rooms cùng lúc
+                                   index_type_rooms: bool = True):
         """
         Index hotels từ database MySQL với smart chunking và incremental indexing
         
@@ -415,6 +417,8 @@ class SimpleRAGSystem:
             incremental: If True, only index new/updated hotels
             recreate_collection: If True, recreate collection (will delete all data)
             batch_size: Number of hotels to process in each batch
+            index_rooms: If True, also index rooms (default: True)
+            index_type_rooms: If True, also index type_rooms (default: True)
         """
         logger.info("🔄 Indexing hotels from database...")
         
@@ -565,6 +569,38 @@ class SimpleRAGSystem:
         
         # Initialize retriever and QA chain
         self._initialize_qa_chain()
+        
+        logger.info("✅ Hotel indexing complete!")
+        
+        # Index rooms and type_rooms if requested
+        if index_rooms or index_type_rooms:
+            try:
+                from data.processor import DataProcessor
+                logger.info("")
+                logger.info("=" * 70)
+                logger.info("🔄 Indexing Rooms and Type Rooms...")
+                logger.info("=" * 70)
+                
+                processor = DataProcessor(rag=self)
+                
+                if index_rooms:
+                    logger.info("📊 Indexing rooms...")
+                    processor.process_and_index_rooms(
+                        recreate_collection=False,
+                        batch_size=batch_size
+                    )
+                
+                if index_type_rooms:
+                    logger.info("📊 Indexing type_rooms...")
+                    processor.process_and_index_type_rooms(
+                        recreate_collection=False,
+                        batch_size=batch_size
+                    )
+                
+                logger.info("✅ Rooms and Type Rooms indexing complete!")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to index rooms/type_rooms: {e}")
+                logger.warning("   Continuing...")
         
         logger.info("✅ Database indexing complete!")
     
@@ -829,51 +865,94 @@ class SimpleRAGSystem:
                             # Support both hotels and coupons
                             document_type = doc.metadata.get("document_type", "hotel")
                             
-                            if document_type == "coupon":
-                                # For coupons: use coupon_id * 1000000 + chunk_index + 1000000000000 (1 trillion offset)
-                                # This ensures no conflict with hotels
-                                coupon_id = doc.metadata.get("coupon_id", 0)
-                                chunk_idx = doc.metadata.get("chunk_index", 0)
-                                
+                            # Check if ID is already provided in metadata (for room, type_room, etc.)
+                            if "id" in doc.metadata:
+                                # Use provided ID directly
                                 try:
-                                    coupon_id = int(coupon_id) if coupon_id is not None else 0
-                                    chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
+                                    doc_id = int(doc.metadata["id"])
                                 except (ValueError, TypeError):
-                                    logger.warning(f"Invalid coupon_id or chunk_index: coupon_id={coupon_id}, chunk_idx={chunk_idx}")
-                                    coupon_id = 0
-                                    chunk_idx = 0
-                                
-                                # Create unique integer ID with offset: 1000000000000 + coupon_id * 1000000 + chunk_index
-                                # This allows up to 1,000,000 chunks per coupon
-                                # Example: coupon_id=5, chunk_idx=0 -> 1000000005000
-                                doc_id = 1000000000000 + (coupon_id * 1000000) + chunk_idx
-                                
-                                # Store chunk_id as string in metadata for reference (if not exists)
-                                if "chunk_id" not in doc.metadata:
-                                    doc.metadata["chunk_id"] = f"coupon_{coupon_id}_{chunk_idx}"
+                                    logger.warning(f"Invalid ID in metadata: {doc.metadata.get('id')}, generating new ID")
+                                    doc_id = None
                             else:
-                                # For hotels: use hotel_id * 1000000 + chunk_index (original logic)
-                                hotel_id = doc.metadata.get("hotel_id", 0)
-                                chunk_idx = doc.metadata.get("chunk_index", 0)
-                                
-                                try:
-                                    hotel_id = int(hotel_id) if hotel_id is not None else 0
-                                    chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
-                                except (ValueError, TypeError):
-                                    logger.warning(f"Invalid hotel_id or chunk_index: hotel_id={hotel_id}, chunk_idx={chunk_idx}")
-                                    hotel_id = 0
-                                    chunk_idx = 0
-                                
-                                # Create unique integer ID: hotel_id * 1000000 + chunk_index
-                                # This allows up to 1,000,000 chunks per hotel (more than enough)
-                                # Example: hotel_id=2, chunk_idx=0 -> 2000000
-                                #          hotel_id=2, chunk_idx=1 -> 2000001
-                                #          hotel_id=123, chunk_idx=0 -> 123000000
-                                doc_id = hotel_id * 1000000 + chunk_idx
-                                
-                                # Store chunk_id as string in metadata for reference (if not exists)
-                                if "chunk_id" not in doc.metadata:
-                                    doc.metadata["chunk_id"] = f"{hotel_id}_{chunk_idx}"
+                                doc_id = None
+                            
+                            # Generate ID if not provided
+                            if doc_id is None:
+                                if document_type == "coupon":
+                                    # For coupons: use coupon_id * 1000000 + chunk_index + 1000000000000 (1 trillion offset)
+                                    # This ensures no conflict with hotels
+                                    coupon_id = doc.metadata.get("coupon_id", 0)
+                                    chunk_idx = doc.metadata.get("chunk_index", 0)
+                                    
+                                    try:
+                                        coupon_id = int(coupon_id) if coupon_id is not None else 0
+                                        chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid coupon_id or chunk_index: coupon_id={coupon_id}, chunk_idx={chunk_idx}")
+                                        coupon_id = 0
+                                        chunk_idx = 0
+                                    
+                                    # Create unique integer ID with offset: 1000000000000 + coupon_id * 1000000 + chunk_index
+                                    # This allows up to 1,000,000 chunks per coupon
+                                    # Example: coupon_id=5, chunk_idx=0 -> 1000000005000
+                                    doc_id = 1000000000000 + (coupon_id * 1000000) + chunk_idx
+                                    
+                                    # Store chunk_id as string in metadata for reference (if not exists)
+                                    if "chunk_id" not in doc.metadata:
+                                        doc.metadata["chunk_id"] = f"coupon_{coupon_id}_{chunk_idx}"
+                                elif document_type == "room":
+                                    # For rooms: use room_id + 2000000 offset
+                                    # Room ID range: 2,000,000 - 2,999,999
+                                    room_id = doc.metadata.get("room_id", 0)
+                                    try:
+                                        room_id = int(room_id) if room_id is not None else 0
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid room_id: {room_id}")
+                                        room_id = 0
+                                    
+                                    doc_id = 2000000 + room_id
+                                    
+                                    # Store chunk_id as string in metadata for reference (if not exists)
+                                    if "chunk_id" not in doc.metadata:
+                                        doc.metadata["chunk_id"] = f"room_{room_id}"
+                                elif document_type == "type_room":
+                                    # For type_rooms: use type_room_id + 3000000 offset
+                                    # Type Room ID range: 3,000,000 - 3,999,999
+                                    type_room_id = doc.metadata.get("type_room_id", 0)
+                                    try:
+                                        type_room_id = int(type_room_id) if type_room_id is not None else 0
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid type_room_id: {type_room_id}")
+                                        type_room_id = 0
+                                    
+                                    doc_id = 3000000 + type_room_id
+                                    
+                                    # Store chunk_id as string in metadata for reference (if not exists)
+                                    if "chunk_id" not in doc.metadata:
+                                        doc.metadata["chunk_id"] = f"type_room_{type_room_id}"
+                                else:
+                                    # For hotels (default): use hotel_id * 1000000 + chunk_index (original logic)
+                                    hotel_id = doc.metadata.get("hotel_id", 0)
+                                    chunk_idx = doc.metadata.get("chunk_index", 0)
+                                    
+                                    try:
+                                        hotel_id = int(hotel_id) if hotel_id is not None else 0
+                                        chunk_idx = int(chunk_idx) if chunk_idx is not None else 0
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid hotel_id or chunk_index: hotel_id={hotel_id}, chunk_idx={chunk_idx}")
+                                        hotel_id = 0
+                                        chunk_idx = 0
+                                    
+                                    # Create unique integer ID: hotel_id * 1000000 + chunk_index
+                                    # This allows up to 1,000,000 chunks per hotel (more than enough)
+                                    # Example: hotel_id=2, chunk_idx=0 -> 2000000
+                                    #          hotel_id=2, chunk_idx=1 -> 2000001
+                                    #          hotel_id=123, chunk_idx=0 -> 123000000
+                                    doc_id = hotel_id * 1000000 + chunk_idx
+                                    
+                                    # Store chunk_id as string in metadata for reference (if not exists)
+                                    if "chunk_id" not in doc.metadata:
+                                        doc.metadata["chunk_id"] = f"{hotel_id}_{chunk_idx}"
                             
                             # Ensure page_content is not None or empty
                             page_content = doc.page_content or ""

@@ -354,6 +354,133 @@ class DatabaseConnector:
             logger.error(f"Error getting coupon count: {e}")
             return 0
     
+    def get_rooms_enriched(self, 
+                          hotel_ids: Optional[List[int]] = None,
+                          limit: Optional[int] = None) -> pd.DataFrame:
+        """
+        Lấy dữ liệu phòng full option: Room info + Type info + Hotel name
+        Note: Một room có thể có nhiều type_room (với giá khác nhau)
+        """
+        logger.info("Fetching enriched room data...")
+        
+        # Query sử dụng JOIN để lấy thông tin liên quan
+        # Cấu trúc: tbl_room -> tbl_type_room (một room có nhiều type_room)
+        query = """
+        SELECT 
+            r.room_id,
+            r.room_name,
+            r.room_amount_of_people,
+            r.room_acreage,
+            r.room_view,
+            tr.type_room_id,
+            tr.type_room_price as room_price,
+            tr.type_room_price_sale,
+            tr.type_room_bed,
+            tr.type_room_quantity as room_amount,
+            tr.type_room_condition,
+            tr.type_room_status,
+            h.hotel_id,
+            h.hotel_name,
+            h.hotel_rank,
+            a.area_name
+        FROM tbl_room r
+        JOIN tbl_type_room tr ON r.room_id = tr.room_id
+        JOIN tbl_hotel h ON r.hotel_id = h.hotel_id
+        LEFT JOIN tbl_area a ON h.area_id = a.area_id
+        WHERE h.hotel_status = 1 
+          AND r.room_status = 1
+          AND tr.type_room_status = 1
+          AND r.deleted_at IS NULL
+          AND tr.deleted_at IS NULL
+        """
+        
+        params = {}
+        
+        # Filter by Hotel IDs (hữu ích khi chỉ muốn index lại 1 khách sạn vừa update)
+        if hotel_ids:
+            placeholders = ','.join([':hid_' + str(i) for i in range(len(hotel_ids))])
+            query += f" AND h.hotel_id IN ({placeholders})"
+            for i, hid in enumerate(hotel_ids):
+                params[f'hid_{i}'] = hid
+        
+        query += " ORDER BY h.hotel_id, tr.type_room_price ASC"
+        
+        if limit:
+            query += " LIMIT :limit"
+            params['limit'] = limit
+            
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), params)
+                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            logger.info(f"Fetched {len(df)} rooms enriched details")
+            return df
+        except Exception as e:
+            logger.error(f"Error fetching rooms: {e}")
+            raise
+    
+    def get_type_rooms_enriched(self, 
+                                hotel_ids: Optional[List[int]] = None,
+                                limit: Optional[int] = None) -> pd.DataFrame:
+        """
+        Lấy dữ liệu loại phòng full option: Type Room info + Hotel names (có thể nhiều hotel dùng cùng type)
+        Note: Group theo type_room_id để tổng hợp thông tin từ nhiều rooms
+        """
+        logger.info("Fetching enriched type room data...")
+        
+        # Query sử dụng JOIN và GROUP_CONCAT để lấy tất cả hotel names sử dụng type này
+        # Group theo type_room_id, type_room_bed, type_room_price để tạo unique type
+        query = """
+        SELECT 
+            tr.type_room_id,
+            r.room_name as type_room_name,
+            tr.type_room_bed,
+            tr.type_room_condition,
+            GROUP_CONCAT(DISTINCT h.hotel_id ORDER BY h.hotel_id SEPARATOR ',') as hotel_ids,
+            GROUP_CONCAT(DISTINCT h.hotel_name ORDER BY h.hotel_id SEPARATOR ' | ') as hotel_names,
+            GROUP_CONCAT(DISTINCT h.hotel_rank ORDER BY h.hotel_id SEPARATOR ',') as hotel_ranks,
+            GROUP_CONCAT(DISTINCT a.area_name ORDER BY h.hotel_id SEPARATOR ' | ') as area_names,
+            MIN(tr.type_room_price) as min_price,
+            MAX(tr.type_room_price) as max_price,
+            AVG(tr.type_room_price) as avg_price,
+            COUNT(DISTINCT r.room_id) as room_count
+        FROM tbl_type_room tr
+        JOIN tbl_room r ON tr.room_id = r.room_id
+        JOIN tbl_hotel h ON r.hotel_id = h.hotel_id
+        LEFT JOIN tbl_area a ON h.area_id = a.area_id
+        WHERE h.hotel_status = 1 
+          AND r.room_status = 1
+          AND tr.type_room_status = 1
+          AND r.deleted_at IS NULL
+          AND tr.deleted_at IS NULL
+        """
+        
+        params = {}
+        
+        # Filter by Hotel IDs
+        if hotel_ids:
+            placeholders = ','.join([':hid_' + str(i) for i in range(len(hotel_ids))])
+            query += f" AND h.hotel_id IN ({placeholders})"
+            for i, hid in enumerate(hotel_ids):
+                params[f'hid_{i}'] = hid
+        
+        query += " GROUP BY tr.type_room_id, r.room_name, tr.type_room_bed, tr.type_room_condition"
+        query += " ORDER BY tr.type_room_id"
+        
+        if limit:
+            query += " LIMIT :limit"
+            params['limit'] = limit
+            
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), params)
+                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            logger.info(f"Fetched {len(df)} type rooms enriched details")
+            return df
+        except Exception as e:
+            logger.error(f"Error fetching type rooms: {e}")
+            raise
+    
     def close(self):
         """Close database connection"""
         self.engine.dispose()

@@ -118,6 +118,34 @@ def index_rag_data():
             incremental=True
         )
         
+        # Index rooms and type_rooms (cùng collection với hotels)
+        logger.info("\n📊 Indexing rooms and type_rooms...")
+        try:
+            from data.processor import DataProcessor
+            from data.connector import DatabaseConnector
+            from data.normalizer import HotelDataNormalizer
+            
+            processor = DataProcessor(rag=rag)
+            
+            # Index rooms
+            logger.info("  🔄 Indexing rooms...")
+            processor.process_and_index_rooms(
+                recreate_collection=False,
+                batch_size=50
+            )
+            
+            # Index type_rooms
+            logger.info("  🔄 Indexing type_rooms...")
+            processor.process_and_index_type_rooms(
+                recreate_collection=False,
+                batch_size=50
+            )
+            
+            logger.info("  ✅ Rooms and type_rooms indexed successfully!")
+        except Exception as e:
+            logger.warning(f"  ⚠️  Failed to index rooms/type_rooms: {e}")
+            logger.warning("  Continuing with coupons indexing...")
+        
         # Index coupons  
         logger.info("\n📊 Indexing coupons...")
         rag.index_coupons_from_database(

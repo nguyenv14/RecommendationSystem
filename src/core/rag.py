@@ -31,6 +31,22 @@ except ImportError:
         QueryRouter = None
         SQLQueryGenerator = None
 
+# Import DatabaseConnector for fallback room/type_room retrieval
+try:
+    from rag.data.connector import DatabaseConnector
+    from rag.data.normalizer import HotelDataNormalizer
+except ImportError:
+    try:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'rag'))
+        from data.connector import DatabaseConnector
+        from data.normalizer import HotelDataNormalizer
+    except ImportError:
+        logger.warning("Could not import DatabaseConnector or HotelDataNormalizer for room retrieval")
+        DatabaseConnector = None
+        HotelDataNormalizer = None
+
 logger = get_logger(__name__)
 
 
@@ -226,6 +242,28 @@ class RAGService:
                 top_k=top_k,
                 filters=filters
             )
+            
+            # Check if question is about hotel rooms and extract hotel_id from search results
+            hotel_id = self._extract_hotel_id_from_documents(documents, question)
+            hotel_rooms_docs = []
+            hotel_type_rooms_docs = []
+            
+            if hotel_id:
+                logger.info(f"🔍 Detected hotel_id={hotel_id} in question, fetching rooms and type_rooms...")
+                # Get rooms for this hotel
+                hotel_rooms_docs = self._get_hotel_rooms(hotel_id, top_k=20)
+                # Get type_rooms used by this hotel
+                hotel_type_rooms_docs = self._get_hotel_type_rooms(hotel_id, top_k=10)
+                logger.info(f"   Found {len(hotel_rooms_docs)} rooms and {len(hotel_type_rooms_docs)} type_rooms")
+            
+            # Merge hotel info with rooms and type_rooms if available
+            if hotel_rooms_docs or hotel_type_rooms_docs:
+                # Add rooms and type_rooms to documents for context
+                documents.extend(hotel_rooms_docs)
+                documents.extend(hotel_type_rooms_docs)
+                # Sort by score (rooms/type_rooms might not have scores, put them after)
+                documents = sorted(documents, key=lambda x: x.get('score', -1), reverse=True)
+                logger.info(f"Total documents after adding rooms: {len(documents)}")
             
             if not documents:
                 logger.warning("No documents retrieved for question")
@@ -637,4 +675,240 @@ class RAGService:
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {}
+    
+    def _extract_hotel_id_from_documents(self, documents: List[Dict[str, Any]], question: str) -> Optional[int]:
+        """
+        Extract hotel_id from search results or question
+        
+        Args:
+            documents: Search results documents
+            question: Original question
+            
+        Returns:
+            hotel_id if found, None otherwise
+        """
+        try:
+            # First, check if any document in results is a hotel
+            for doc in documents:
+                payload = doc.get('payload', {})
+                document_type = payload.get('document_type')
+                
+                if document_type == 'hotel':
+                    hotel_id = payload.get('hotel_id')
+                    if hotel_id:
+                        try:
+                            return int(hotel_id)
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Also check if it's a room document (has hotel_id)
+                elif document_type == 'room':
+                    hotel_id = payload.get('hotel_id')
+                    if hotel_id:
+                        try:
+                            return int(hotel_id)
+                        except (ValueError, TypeError):
+                            continue
+            
+            # If no hotel found in results, check question patterns
+            # Look for patterns like "KS X", "khách sạn X", "hotel X"
+            question_lower = question.lower()
+            
+            # Check if question mentions "có các phòng", "phòng nào", "giới thiệu"
+            # These patterns suggest user wants room information
+            room_keywords = ["phòng", "room", "có các phòng", "phòng nào", "giới thiệu"]
+            if any(keyword in question_lower for keyword in room_keywords):
+                # Try to search for hotel one more time with hotel filter
+                try:
+                    hotel_docs = self.retriever_service.retrieve(
+                        query=question,
+                        collection_name=self.collection_name,
+                        top_k=3,
+                        filters={"document_type": "hotel"}
+                    )
+                    
+                    if hotel_docs:
+                        top_hotel = hotel_docs[0]
+                        hotel_id = top_hotel.get('payload', {}).get('hotel_id')
+                        if hotel_id:
+                            try:
+                                return int(hotel_id)
+                            except (ValueError, TypeError):
+                                pass
+                except:
+                    pass
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error extracting hotel_id from documents: {e}")
+            return None
+    
+    def _get_hotel_rooms(self, hotel_id: int, top_k: int = 20) -> List[Dict[str, Any]]:
+        """
+        Get rooms for a specific hotel
+        
+        Args:
+            hotel_id: Hotel ID
+            top_k: Maximum number of rooms to return
+            
+        Returns:
+            List of room documents
+        """
+        try:
+            # First, try to get from vector store
+            rooms = self.retriever_service.retrieve_by_filters(
+                filters={"document_type": "room", "hotel_id": hotel_id},
+                collection_name=self.collection_name,
+                limit=top_k
+            )
+            
+            # If no rooms found in vector store, try database fallback
+            if not rooms and DatabaseConnector is not None and HotelDataNormalizer is not None:
+                logger.info(f"No rooms found in vector store for hotel_id={hotel_id}, trying database fallback...")
+                try:
+                    # Initialize connector and normalizer if needed
+                    if self.room_db_connector is None:
+                        self.room_db_connector = DatabaseConnector()
+                    if self.room_normalizer is None:
+                        self.room_normalizer = HotelDataNormalizer()
+                    
+                    # Get rooms from database
+                    rooms_df = self.room_db_connector.get_rooms_enriched(hotel_ids=[hotel_id], limit=top_k)
+                    if not rooms_df.empty:
+                        # Normalize and convert to document format
+                        normalized_df = self.room_normalizer.normalize_rooms(rooms_df)
+                        rooms = []
+                        for _, row in normalized_df.iterrows():
+                            room_doc = {
+                                'id': 2000000 + int(row.get('room_id', 0)),  # Room ID offset
+                                'score': 0.8,
+                                'payload': {
+                                    'document_type': 'room',
+                                    'hotel_id': int(row.get('hotel_id', hotel_id)),
+                                    'hotel_name': str(row.get('hotel_name', '')),
+                                    'room_id': int(row.get('room_id', 0)),
+                                    'price': float(row.get('search_price', 0)),
+                                    'type_name': str(row.get('type_room_name', '')),
+                                    'text': str(row.get('semantic_text', ''))
+                                }
+                            }
+                            rooms.append(room_doc)
+                        logger.info(f"Retrieved {len(rooms)} rooms from database fallback")
+                except Exception as e:
+                    logger.warning(f"Database fallback failed: {e}")
+            
+            # Add default score for rooms (they don't have semantic scores)
+            for room in rooms:
+                if 'score' not in room:
+                    room['score'] = 0.8  # Default relevance score
+            
+            logger.info(f"Found {len(rooms)} rooms for hotel_id={hotel_id}")
+            return rooms
+            
+        except Exception as e:
+            logger.error(f"Error getting hotel rooms: {e}")
+            return []
+    
+    def _get_hotel_type_rooms(self, hotel_id: int, top_k: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get type_rooms used by a specific hotel
+        
+        Args:
+            hotel_id: Hotel ID
+            top_k: Maximum number of type_rooms to return
+            
+        Returns:
+            List of type_room documents
+        """
+        try:
+            # Get all type_rooms first
+            all_type_rooms = self.retriever_service.retrieve_by_filters(
+                filters={"document_type": "type_room"},
+                collection_name=self.collection_name,
+                limit=100  # Get more to filter
+            )
+            
+            # Filter type_rooms that have this hotel_id in their hotel_ids list
+            matching_type_rooms = []
+            for type_room in all_type_rooms:
+                payload = type_room.get('payload', {})
+                hotel_ids = payload.get('hotel_ids', [])
+                
+                # hotel_ids can be a list or a string representation
+                if isinstance(hotel_ids, list):
+                    if hotel_id in hotel_ids:
+                        matching_type_rooms.append(type_room)
+                elif isinstance(hotel_ids, str) and hotel_ids.strip():
+                    # Parse string representation (e.g., "1,2,3")
+                    try:
+                        ids_list = [int(x.strip()) for x in hotel_ids.split(',') if x.strip().isdigit()]
+                        if hotel_id in ids_list:
+                            matching_type_rooms.append(type_room)
+                    except:
+                        pass
+            
+            # If no type_rooms found in vector store, try database fallback
+            if not matching_type_rooms and DatabaseConnector is not None and HotelDataNormalizer is not None:
+                logger.info(f"No type_rooms found in vector store for hotel_id={hotel_id}, trying database fallback...")
+                try:
+                    # Initialize connector and normalizer if needed
+                    if self.room_db_connector is None:
+                        self.room_db_connector = DatabaseConnector()
+                    if self.room_normalizer is None:
+                        self.room_normalizer = HotelDataNormalizer()
+                    
+                    # Get type_rooms from database
+                    type_rooms_df = self.room_db_connector.get_type_rooms_enriched(hotel_ids=[hotel_id], limit=top_k)
+                    if not type_rooms_df.empty:
+                        # Normalize and convert to document format
+                        normalized_df = self.room_normalizer.normalize_type_rooms(type_rooms_df)
+                        matching_type_rooms = []
+                        for _, row in normalized_df.iterrows():
+                            # Parse hotel_ids string to list
+                            hotel_ids_str = str(row.get('hotel_ids', ''))
+                            hotel_ids_list = []
+                            if hotel_ids_str and hotel_ids_str != 'nan':
+                                try:
+                                    hotel_ids_list = [int(hid) for hid in hotel_ids_str.split(',') if hid.strip().isdigit()]
+                                except:
+                                    hotel_ids_list = []
+                            
+                            # Only include if this hotel_id is in the list
+                            if hotel_id in hotel_ids_list:
+                                type_room_doc = {
+                                    'id': 3000000 + int(row.get('type_room_id', 0)),  # Type room ID offset
+                                    'score': 0.7,
+                                    'payload': {
+                                        'document_type': 'type_room',
+                                        'type_room_id': int(row.get('type_room_id', 0)),
+                                        'type_room_name': str(row.get('type_room_name', '')),
+                                        'hotel_ids': hotel_ids_list,
+                                        'hotel_names': str(row.get('hotel_names', '')),
+                                        'min_price': float(row.get('search_min_price', 0)),
+                                        'max_price': float(row.get('search_max_price', 0)),
+                                        'avg_price': float(row.get('search_avg_price', 0)),
+                                        'room_count': int(row.get('room_count', 0)),
+                                        'text': str(row.get('semantic_text', ''))
+                                    }
+                                }
+                                matching_type_rooms.append(type_room_doc)
+                        logger.info(f"Retrieved {len(matching_type_rooms)} type_rooms from database fallback")
+                except Exception as e:
+                    logger.warning(f"Database fallback failed: {e}")
+            
+            # Limit results
+            matching_type_rooms = matching_type_rooms[:top_k]
+            
+            # Add default score
+            for type_room in matching_type_rooms:
+                if 'score' not in type_room:
+                    type_room['score'] = 0.7  # Default relevance score
+            
+            logger.info(f"Found {len(matching_type_rooms)} type_rooms for hotel_id={hotel_id}")
+            return matching_type_rooms
+            
+        except Exception as e:
+            logger.error(f"Error getting hotel type_rooms: {e}")
+            return []
 
