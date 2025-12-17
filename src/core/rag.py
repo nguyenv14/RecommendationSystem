@@ -210,7 +210,7 @@ class RAGService:
             if query_type == "statistical":
                 logger.info("🔍 Routing to SQL handler...")
                 if self.sql_generator is not None:
-                    return self._ask_with_sql(question, classification)
+                    return self._ask_with_sql(question, classification, use_cache=use_cache)
                 else:
                     logger.warning("⚠️  SQL generator not available, using RAG fallback")
             elif query_type == "hybrid":
@@ -342,11 +342,14 @@ class RAGService:
         
         return documents
     
-    def _ask_with_sql(self, question: str, classification: Dict = None) -> Dict[str, Any]:
+    def _ask_with_sql(self, question: str, classification: Dict = None, use_cache: bool = True) -> Dict[str, Any]:
         """
         Ask question với SQL query (cho statistical queries)
         
         Args:
+            question: User question
+            classification: Query classification result
+            use_cache: Whether to use response cache
             question: User question
             classification: Classification result từ query router
             
@@ -420,6 +423,14 @@ class RAGService:
         query_type = sql_info["query_type"]
         
         logger.info(f"📊 Generated SQL ({query_type}): {sql}")
+        
+        # Validate SQL query - check for invalid columns
+        invalid_columns = ["room_type", "room_name", "room_price"]  # Common invalid columns
+        sql_lower = sql.lower()
+        for col in invalid_columns:
+            if col in sql_lower:
+                logger.warning(f"⚠️  SQL query contains invalid column '{col}', falling back to RAG")
+                return self._ask_with_rag_fallback(question, use_cache)
         
         # Execute SQL query
         try:

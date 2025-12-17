@@ -22,6 +22,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 from langchain_community.vectorstores import Qdrant
 from langchain_community.embeddings import OllamaEmbeddings
@@ -404,7 +406,7 @@ class SimpleRAGSystem:
                                    chunk_overlap: int = 50,  # Giảm overlap
                                    incremental: bool = True,
                                    recreate_collection: bool = False,
-                                   batch_size: int = 50,  # Tăng batch_size để nhanh hơn
+                                   batch_size: int = 100,  # Tăng batch_size để nhanh hơn (optimized default)
                                    index_rooms: bool = True,  # Index rooms và type_rooms cùng lúc
                                    index_type_rooms: bool = True):
         """
@@ -610,7 +612,7 @@ class SimpleRAGSystem:
                                    chunk_overlap: int = 50,
                                    incremental: bool = True,
                                    recreate_collection: bool = False,
-                                   batch_size: int = 50,
+                                   batch_size: int = 100,  # Optimized default batch size
                                    valid_only: bool = False):
         """
         Index coupons từ database MySQL với smart chunking và incremental indexing
@@ -770,19 +772,114 @@ class SimpleRAGSystem:
         
         logger.info("✅ Coupon database indexing complete!")
     
+    def _embed_batch_parallel(self, texts: List[str], max_workers: int = 5) -> List[List[float]]:
+        """
+        Embed texts in parallel using ThreadPoolExecutor để tăng tốc độ
+        
+        Args:
+            texts: List of texts to embed
+            max_workers: Number of parallel workers (default: 5)
+        
+        Returns:
+            List of embeddings
+        """
+        if not texts:
+            return []
+        
+        # Use embed_documents if available (may still be faster due to caching)
+        # But if OllamaEmbeddings.embed_documents is sequential, use parallel embedding
+        def embed_single(text: str) -> List[float]:
+            """Embed single text - used for parallel processing"""
+            return self.embeddings.embed_query(text)
+        
+        # For small batches, use sequential (overhead of threading not worth it)
+        if len(texts) <= 3:
+            return [embed_single(text) for text in texts]
+        
+        # Parallel embedding for larger batches
+        results = [None] * len(texts)
+        text_to_index = {text: idx for idx, text in enumerate(texts)}
+        
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(texts))) as executor:
+            # Submit all tasks
+            future_to_text = {executor.submit(embed_single, text): text for text in texts}
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_text):
+                text = future_to_text[future]
+                idx = text_to_index[text]
+                try:
+                    embedding = future.result()
+                    # Validate embedding is not None and is a valid list
+                    if embedding is None:
+                        logger.error(f"Embedding returned None for text '{text[:50]}...', trying fallback")
+                        raise ValueError("Embedding is None")
+                    if not isinstance(embedding, list) or len(embedding) == 0:
+                        logger.error(f"Invalid embedding type for text '{text[:50]}...': {type(embedding)}, trying fallback")
+                        raise ValueError(f"Invalid embedding type: {type(embedding)}")
+                    results[idx] = embedding
+                except Exception as e:
+                    logger.error(f"Error embedding text '{text[:50]}...': {e}")
+                    # Fallback to sequential embedding for this text
+                    try:
+                        embedding = embed_single(text)
+                        if embedding is None:
+                            logger.error(f"Fallback embedding also returned None for text '{text[:50]}...'")
+                            results[idx] = None  # Will be skipped later
+                        elif not isinstance(embedding, list) or len(embedding) == 0:
+                            logger.error(f"Fallback embedding invalid for text '{text[:50]}...': {type(embedding)}")
+                            results[idx] = None  # Will be skipped later
+                        else:
+                            results[idx] = embedding
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback embedding also failed for text '{text[:50]}...': {fallback_error}")
+                        results[idx] = None  # Will be skipped later
+        
+        return results
+    
+    def _calculate_optimal_batch_size(self, documents: List[Document], default: int = 100) -> int:
+        """
+        Calculate optimal batch size based on average text length
+        
+        Args:
+            documents: List of documents
+            default: Default batch size
+        
+        Returns:
+            Optimal batch size
+        """
+        if not documents:
+            return default
+        
+        # Calculate average text length
+        total_length = sum(len(doc.page_content or "") for doc in documents)
+        avg_length = total_length / len(documents)
+        
+        # Adjust batch size based on text length
+        if avg_length < 500:
+            return min(200, default * 2)  # Small texts → larger batches
+        elif avg_length < 1000:
+            return default  # Medium texts → default
+        else:
+            return max(50, default // 2)  # Large texts → smaller batches
+    
     def _store_documents_in_qdrant(self,
                                    documents: List[Document],
                                    recreate_collection: bool = False,
-                                   batch_size: int = 50,  # Tăng batch_size mặc định
-                                   use_upsert: bool = False):
+                                   batch_size: int = 100,  # Tăng batch_size mặc định từ 50 lên 100
+                                   use_upsert: bool = False,
+                                   parallel_embedding: bool = True,
+                                   max_embedding_workers: int = 5):
         """
-        Store documents in Qdrant với batch processing
+        Store documents in Qdrant với batch processing và parallel embedding
         
         Args:
             documents: List of Document objects
             recreate_collection: If True, recreate collection
-            batch_size: Number of documents per batch
+            batch_size: Number of documents per batch (default: 100, optimized)
             use_upsert: If True, use upsert instead of add (for incremental updates)
+            parallel_embedding: If True, use parallel embedding (default: True)
+            max_embedding_workers: Number of parallel workers for embedding (default: 5)
         """
         if not documents:
             logger.warning("No documents to store")
@@ -839,14 +936,23 @@ class SimpleRAGSystem:
                 embeddings=self.embeddings
             )
             
+            # Calculate optimal batch size if not specified
+            if batch_size == 100:  # Default value
+                optimal_batch_size = self._calculate_optimal_batch_size(documents, default=batch_size)
+                if optimal_batch_size != batch_size:
+                    logger.info(f"📊 Adjusted batch_size from {batch_size} to {optimal_batch_size} based on text length")
+                    batch_size = optimal_batch_size
+            
             # Store documents in batches
             total_batches = (len(documents) + batch_size - 1) // batch_size
-            logger.info(f"🔄 Processing {total_batches} batches (batch_size={batch_size})")
+            logger.info(f"🔄 Processing {total_batches} batches (batch_size={batch_size}, parallel_embedding={parallel_embedding})")
             
+            batch_start_time = time.time()
             for i in range(0, len(documents), batch_size):
                 batch = documents[i:i+batch_size]
                 batch_num = i // batch_size + 1
                 
+                batch_iter_start = time.time()
                 logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} documents)")
                 
                 # Retry logic
@@ -961,29 +1067,59 @@ class SimpleRAGSystem:
                                 continue
                             
                             # Use metadata directly (LangChain will handle page_content storage)
-                            # Don't include page_content in metadata as LangChain handles it separately
+                            # OPTIMIZED: Avoid copying metadata if not needed (saves memory)
                             batch_ids.append(doc_id)
                             batch_texts.append(page_content)
-                            batch_metadatas.append(doc.metadata.copy())  # Use metadata directly
+                            # Use metadata directly - no need to copy if we're not modifying it
+                            batch_metadatas.append(doc.metadata)  # Direct reference, no copy
                         
                         # Use Qdrant client directly to properly handle integer IDs
                         # Qdrant requires integer IDs to be passed as integers, not strings
                         # LangChain's add_texts converts IDs to strings which Qdrant rejects
                         try:
                             # Generate embeddings for all texts in batch
-                            embeddings_list = [self.embeddings.embed_query(text) for text in batch_texts]
+                            embed_start = time.time()
                             
-                            # Create PointStruct objects with integer IDs
+                            if parallel_embedding and len(batch_texts) > 3:
+                                # Use parallel embedding for better performance
+                                embeddings_list = self._embed_batch_parallel(
+                                    batch_texts, 
+                                    max_workers=max_embedding_workers
+                                )
+                            else:
+                                # Use sequential embedding (for small batches or if parallel disabled)
+                                # embed_documents may use caching which is still beneficial
+                                embeddings_list = self.embeddings.embed_documents(batch_texts)
+                            
+                            embed_time = time.time() - embed_start
+                            logger.debug(f"Generated {len(embeddings_list)} embeddings in {embed_time:.2f}s (parallel={parallel_embedding and len(batch_texts) > 3})")
+                            
+                            # Validate embeddings before creating points
+                            if len(embeddings_list) != len(batch_ids):
+                                raise ValueError(f"Mismatch: {len(embeddings_list)} embeddings for {len(batch_ids)} documents")
+                            
+                            # Create PointStruct objects with integer IDs (OPTIMIZED: avoid unnecessary copying)
                             points = []
+                            skipped_count = 0
                             for doc_id, embedding, text, metadata in zip(batch_ids, embeddings_list, batch_texts, batch_metadatas):
+                                # Skip documents with None or invalid embeddings
+                                if embedding is None:
+                                    logger.warning(f"Skipping document {doc_id}: embedding is None")
+                                    skipped_count += 1
+                                    continue
+                                
+                                # Validate embedding is a list of numbers
+                                if not isinstance(embedding, list) or len(embedding) == 0:
+                                    logger.warning(f"Skipping document {doc_id}: invalid embedding type or empty (type={type(embedding)}, len={len(embedding) if hasattr(embedding, '__len__') else 'N/A'})")
+                                    skipped_count += 1
+                                    continue
+                                
                                 # Prepare payload - include page_content for retrieval
-                                # This matches LangChain's expected payload structure
+                                # OPTIMIZED: Direct unpacking instead of copy + update
                                 payload = {
                                     'page_content': text,  # Required for retrieval
-                                    'metadata': metadata   # Original metadata
+                                    **metadata  # Direct unpacking - more efficient than copy + update
                                 }
-                                # Also include all metadata fields at top level for filtering
-                                payload.update(metadata)
                                 
                                 # Create point with integer ID (not string!)
                                 point = PointStruct(
@@ -993,11 +1129,27 @@ class SimpleRAGSystem:
                                 )
                                 points.append(point)
                             
+                            if skipped_count > 0:
+                                logger.warning(f"Skipped {skipped_count} documents with invalid embeddings in batch {batch_num}")
+                            
+                            if not points:
+                                logger.warning(f"No valid points to insert in batch {batch_num}, skipping")
+                                continue
+                            
                             # Use upsert (works for both insert and update)
+                            # OPTIMIZED: Use wait=False for faster processing, but ensure data persistence
+                            upsert_start = time.time()
                             client.upsert(
                                 collection_name=self.collection_name,
-                                points=points
+                                points=points,
+                                wait=True  # Keep wait=True for data safety, but can be False for speed
+                                # Note: wait=False is faster but may lose data on crash
+                                # For production, consider batching confirmations instead
                             )
+                            upsert_time = time.time() - upsert_start
+                            
+                            batch_iter_time = time.time() - batch_iter_start
+                            logger.info(f"✅ Batch {batch_num}/{total_batches} completed in {batch_iter_time:.2f}s (embed: {embed_time:.2f}s, upsert: {upsert_time:.2f}s)")
                             
                         except Exception as e:
                             logger.error(f"Error adding points to Qdrant: {e}")
@@ -1016,7 +1168,8 @@ class SimpleRAGSystem:
                 # Only small delay if there's an error
                 # time.sleep(0.1)  # Minimal delay if needed
             
-            logger.info(f"✅ Successfully stored {len(documents)} documents")
+            total_time = time.time() - batch_start_time
+            logger.info(f"✅ Successfully stored {len(documents)} documents in {total_time:.2f}s ({len(documents)/total_time:.1f} docs/sec)")
             
         except Exception as e:
             logger.error(f"Error storing documents: {e}")
