@@ -73,6 +73,14 @@ class EmbeddingService:
             )
             logger.info(f"Using Ollama embeddings: {self.model_name}")
             
+            # Test connection with a simple embedding
+            try:
+                logger.debug("Testing Ollama connection...")
+                test_emb = self.model.embed_query("test")
+                logger.debug(f"✅ Ollama connection OK (vector size: {len(test_emb)})")
+            except Exception as e:
+                logger.warning(f"⚠️  Ollama connection test failed: {e}. Will retry on first real embedding.")
+            
         elif self.provider == "ollama_direct":
             # Direct API call (for compatibility with old code)
             self.model = None
@@ -170,12 +178,17 @@ class EmbeddingService:
         """
         embeddings = []
         total = len(texts)
+        total_batches = (total + batch_size - 1) // batch_size
         
-        for i in range(0, total, batch_size):
+        for batch_idx, i in enumerate(range(0, total, batch_size), 1):
             batch = texts[i:i + batch_size]
             
-            if show_progress and i % (batch_size * 5) == 0:
-                logger.info(f"Embedding progress: {i}/{total}")
+            # Log progress more frequently (every batch or every 5 batches)
+            if show_progress:
+                if batch_idx % 5 == 0 or batch_idx == 1 or batch_idx == total_batches:
+                    logger.info(f"📊 Processing batch {batch_idx}/{total_batches}: items {i} to {min(i+batch_size, total)}/{total}")
+                else:
+                    logger.debug(f"Processing batch {batch_idx}/{total_batches} ({i}/{total})")
             
             # Check cache for batch first
             texts_to_embed = []
@@ -188,31 +201,62 @@ class EmbeddingService:
                 else:
                     texts_to_embed.append(text)
             
+            # Log cache hit rate
+            if show_progress and texts_to_embed:
+                cache_hits = len(batch) - len(texts_to_embed)
+                if cache_hits > 0:
+                    logger.info(f"Batch {batch_idx}: {cache_hits}/{len(batch)} cached, {len(texts_to_embed)} to embed")
+                else:
+                    logger.info(f"Batch {batch_idx}: Embedding {len(texts_to_embed)} texts (no cache hits)")
+            
             # Batch embed texts that are not cached
             if texts_to_embed:
                 if self.provider == "ollama":
                     # Use batch embedding if available
                     try:
+                        import time
+                        start_time = time.time()
+                        logger.info(f"Batch {batch_idx}: Calling Ollama embed_documents for {len(texts_to_embed)} texts...")
                         batch_emb = self.model.embed_documents(texts_to_embed)
+                        elapsed = time.time() - start_time
+                        logger.info(f"Batch {batch_idx}: Received {len(batch_emb)} embeddings from Ollama (took {elapsed:.2f}s)")
+                        
+                        if len(batch_emb) != len(texts_to_embed):
+                            raise ValueError(f"Expected {len(texts_to_embed)} embeddings, got {len(batch_emb)}")
+                        
                         for text, emb in zip(texts_to_embed, batch_emb):
                             cached_embeddings[text] = emb
                             # Store in cache
                             self._store_cache(text, emb)
                     except Exception as e:
                         # Fallback to individual embedding
-                        logger.warning(f"Batch embedding failed, falling back to individual: {e}")
-                        for text in texts_to_embed:
-                            emb = self.embed_query(text)
-                            cached_embeddings[text] = emb
+                        logger.warning(f"Batch embedding failed for batch {batch_idx}, falling back to individual: {e}")
+                        for text_idx, text in enumerate(texts_to_embed, 1):
+                            try:
+                                logger.debug(f"Embedding text {text_idx}/{len(texts_to_embed)} individually...")
+                                emb = self.embed_query(text)
+                                cached_embeddings[text] = emb
+                            except Exception as e2:
+                                logger.error(f"Failed to embed text {text_idx}: {e2}")
+                                # Use zero vector as fallback (or raise)
+                                raise
                 else:
                     # Fallback to individual embedding
-                    for text in texts_to_embed:
+                    for text_idx, text in enumerate(texts_to_embed, 1):
+                        logger.debug(f"Embedding text {text_idx}/{len(texts_to_embed)} individually...")
                         emb = self.embed_query(text)
                         cached_embeddings[text] = emb
             
             # Reconstruct batch in original order
             batch_embeddings = [cached_embeddings[text] for text in batch]
             embeddings.extend(batch_embeddings)
+            
+            # Log completion of batch (log every batch for better visibility)
+            if show_progress:
+                if batch_idx % 5 == 0 or batch_idx == 1 or batch_idx == total_batches:
+                    logger.info(f"✅ Completed batch {batch_idx}/{total_batches} ({len(embeddings)}/{total} embeddings done)")
+                else:
+                    logger.debug(f"✅ Completed batch {batch_idx}/{total_batches} ({len(embeddings)}/{total} embeddings done)")
         
         if show_progress:
             logger.info(f"✅ Embedded {total} documents")
