@@ -10,6 +10,13 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from ..shared import get_logger
 
+# Try to import tiktoken for accurate token counting
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+
 logger = get_logger(__name__)
 
 
@@ -47,6 +54,20 @@ class GeneratorService:
         self.model_name = model_name
         self.temperature = temperature
         self.openrouter_model = openrouter_model or model_name
+        
+        # Initialize tokenizer for accurate token counting
+        self.tokenizer = None
+        if TIKTOKEN_AVAILABLE:
+            try:
+                # Use cl100k_base encoding (used by GPT-3.5/GPT-4)
+                # This is a good default for most models
+                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+                logger.info("✅ Tiktoken initialized for accurate token counting")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize tiktoken: {e}. Using character-based estimation.")
+                self.tokenizer = None
+        else:
+            logger.warning("⚠️  Tiktoken not available. Install with: pip install tiktoken. Using character-based estimation.")
         
         # Log provider configuration
         logger.info(f"🔧 Initializing GeneratorService with provider: {provider}")
@@ -219,18 +240,31 @@ class GeneratorService:
             Context string (tổng context có thể ~4000-5000 characters với k=5, chunk_size=800)
         """
         # Sort documents by relevance score (highest first)
+        # Prefer rerank_score if available (from cross-encoder re-ranking)
         sorted_docs = sorted(
             documents, 
-            key=lambda x: x.get("score", 0.0), 
+            key=lambda x: x.get("rerank_score", x.get("score", 0.0)), 
             reverse=True
         )
         
         context_parts = []
         current_tokens = 0
         
-        # Approximate token counting (rough estimate: 1 token ≈ 4 characters for Vietnamese)
-        # For more accurate counting, would need tiktoken or similar
+        # Use tiktoken for accurate token counting if available
+        # Fallback to character-based estimation (1 token ≈ 4 chars for Vietnamese)
         chars_per_token = 4
+        use_tiktoken = self.tokenizer is not None
+        
+        def count_tokens(text: str) -> int:
+            """Count tokens accurately using tiktoken or estimate"""
+            if use_tiktoken:
+                try:
+                    return len(self.tokenizer.encode(text))
+                except Exception as e:
+                    logger.warning(f"Error counting tokens with tiktoken: {e}, falling back to estimation")
+                    return int(len(text) / chars_per_token)
+            else:
+                return int(len(text) / chars_per_token)
         
         for i, doc in enumerate(sorted_docs, 1):
             payload = doc.get("payload", {})
@@ -242,29 +276,41 @@ class GeneratorService:
             if not text:
                 continue
             
-            # Estimate tokens for this document
+            # Build document text with prefix
             doc_text = f"[Document {i}]\n{text}"
-            estimated_tokens = len(doc_text) / chars_per_token
+            doc_tokens = count_tokens(doc_text)
             
             # Check if adding this document would exceed limit
-            if current_tokens + estimated_tokens > max_tokens:
+            if current_tokens + doc_tokens > max_tokens:
                 # Try to truncate document to fit
                 remaining_tokens = max_tokens - current_tokens
                 if remaining_tokens > 100:  # Only if we have meaningful space left
-                    max_chars = int(remaining_tokens * chars_per_token)
-                    text = text[:max_chars] + "..."
-                    doc_text = f"[Document {i}]\n{text}"
+                    # Truncate text to fit remaining tokens
+                    if use_tiktoken:
+                        # Encode and truncate at token level
+                        encoded = self.tokenizer.encode(text)
+                        truncated_encoded = encoded[:remaining_tokens - 10]  # Reserve some for prefix
+                        truncated_text = self.tokenizer.decode(truncated_encoded)
+                    else:
+                        # Character-based truncation
+                        max_chars = int(remaining_tokens * chars_per_token)
+                        truncated_text = text[:max_chars]
+                    
+                    doc_text = f"[Document {i}]\n{truncated_text}..."
                     context_parts.append(doc_text)
+                    current_tokens += count_tokens(doc_text)
                 break
             
             context_parts.append(doc_text)
-            current_tokens += estimated_tokens
+            current_tokens += doc_tokens
         
         # Combine tất cả documents thành 1 context string
         # Theo RAG_FLOW_EXPLANATION.md: chain_type="stuff" combines all documents into 1 prompt
         result = "\n\n".join(context_parts) if context_parts else "Không có thông tin."
         
-        logger.debug(f"Built context: {len(context_parts)} documents, ~{int(current_tokens)} tokens")
+        # Verify final token count
+        final_tokens = count_tokens(result)
+        logger.debug(f"Built context: {len(context_parts)} documents, {final_tokens} tokens (limit: {max_tokens})")
         return result
     
     def _extract_text(self, payload: Dict[str, Any]) -> str:
@@ -329,8 +375,8 @@ class GeneratorService:
     
     def _get_default_prompt(self) -> str:
         """
-        Get default RAG prompt template
-        Theo RAG_FLOW_EXPLANATION.md: Prompt chi tiết, so sánh hotels
+        Get optimized RAG prompt template (reduced from ~2000 to ~800 tokens)
+        Giữ các rules quan trọng, rút gọn ví dụ và phần lặp lại
         """
         return """Bạn là trợ lý tư vấn khách sạn tại Đà Nẵng. Trả lời HOÀN TOÀN bằng tiếng Việt.
 
@@ -339,30 +385,14 @@ Thông tin khách sạn:
 
 Câu hỏi: {question}
 
-QUAN TRỌNG: 
-- CHỈ trả lời các câu hỏi liên quan đến khách sạn, nhà nghỉ, resort, homestay tại Đà Nẵng.
-- Nếu câu hỏi KHÔNG liên quan đến khách sạn hoặc du lịch, bạn PHẢI trả lời: "Xin lỗi, tôi chỉ có thể tư vấn về khách sạn tại Đà Nẵng. Câu hỏi của bạn không liên quan đến dịch vụ này."
-- Nếu thông tin khách sạn trên KHÔNG có câu trả lời phù hợp cho câu hỏi, bạn PHẢI trả lời: "Không tìm thấy khách sạn phù hợp với yêu cầu của bạn trong hệ thống."
+QUY TẮC:
+1. CHỈ trả lời câu hỏi về khách sạn/du lịch tại Đà Nẵng. Nếu không liên quan, trả lời: "Xin lỗi, tôi chỉ tư vấn về khách sạn tại Đà Nẵng."
+2. Nếu không có thông tin phù hợp, trả lời: "Không tìm thấy khách sạn phù hợp trong hệ thống."
+3. TÊN KHÁCH SẠN: BẮT BUỘC dùng tên cụ thể từ "Tên khách sạn:" trong context, KHÔNG dùng brand_name.
+   ✅ ĐÚNG: "Grand Tourane Hotel" (từ "Tên khách sạn: Grand Tourane Hotel")
+   ❌ SAI: "Meliá Hotels International" (đây là brand, không phải tên khách sạn)
 
-QUY TẮC BẮT BUỘC VỀ TÊN KHÁCH SẠN - TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM:
-❌ NGHIÊM CẤM sử dụng tên thương hiệu (brand_name) như: "Meliá Hotels International", "Accor", "InterContinental Hotels Group"
-✅ BẮT BUỘC sử dụng TÊN KHÁCH SẠN CỤ THỂ từ trường "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU mỗi block trong context
-
-VÍ DỤ CÁCH TRẢ LỜI ĐÚNG VÀ SAI:
-✅ ĐÚNG: "Grand Tourane Hotel" (lấy từ "Tên khách sạn: Grand Tourane Hotel")
-✅ ĐÚNG: "Meliá Vinpearl Riverfront Đà Nẵng" (lấy từ "Tên khách sạn: Meliá Vinpearl Riverfront Đà Nẵng")
-✅ ĐÚNG: "Pullman Danang Beach Resort" (lấy từ "Tên khách sạn: Pullman Danang Beach Resort")
-❌ SAI: "Meliá Đà Nẵng – Xuân Thiều" (sai vì đây KHÔNG phải tên khách sạn trong database)
-❌ SAI: "Accor Hotel tại Đà Nẵng" (sai vì đây là brand, không phải tên khách sạn cụ thể)
-❌ SAI: "InterContinental Đà Nẵng" (sai nếu tên đầy đủ là "InterContinental Danang Sun Peninsula Resort")
-❌ SAI: "Meliá Hotels International" (sai vì đây là brand name, phải dùng tên khách sạn cụ thể)
-
-CÁCH XÁC ĐỊNH TÊN KHÁCH SẠN ĐÚNG (BẮT BUỘC):
-1. Tìm dòng "Tên khách sạn:" hoặc "Khách sạn" ở ĐẦU TIÊN trong mỗi block thông tin của context
-2. Sử dụng CHÍNH XÁC, NGUYÊN VĂN tên đó, KHÔNG RÚT GỌN, KHÔNG thay bằng brand name, KHÔNG tự bịa tên
-3. Dòng "Thương hiệu:" CHỈ để tham khảo nhóm khách sạn, TUYỆT ĐỐI KHÔNG dùng để đặt tên khách sạn trong câu trả lời
-
-Nếu câu hỏi liên quan đến khách sạn và có thông tin phù hợp, hãy trả lời chi tiết, tự nhiên bằng tiếng Việt. BẮT BUỘC nêu TÊN KHÁCH SẠN CỤ THỂ (lấy CHÍNH XÁC từ "Tên khách sạn:" trong context), giá, đánh giá (sao), địa điểm, và các tiện ích nổi bật. So sánh các khách sạn nếu có nhiều lựa chọn.
+Trả lời chi tiết, tự nhiên bằng tiếng Việt. Nêu tên khách sạn, giá, đánh giá (sao), địa điểm, tiện ích. So sánh nếu có nhiều lựa chọn.
 
 Trả lời:"""
 

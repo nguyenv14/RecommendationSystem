@@ -9,6 +9,7 @@ import numpy as np
 from .embeddings import EmbeddingService
 from .vectorstore import VectorStoreService
 from .retriever import RetrieverService
+from .reranker import DiversityReranker
 from ..shared import get_logger
 
 logger = get_logger(__name__)
@@ -37,6 +38,9 @@ class RecommenderService:
         self.retriever = retriever_service
         self.embedding = embedding_service
         self.vectorstore = vectorstore_service
+        
+        # Initialize diversity re-ranker for diverse recommendations
+        self.diversity_reranker = DiversityReranker(diversity_weight=0.3)
         
         logger.info(f"✅ RecommenderService initialized")
     
@@ -229,10 +233,12 @@ class RecommenderService:
         top_k: int = 10,
         semantic_weight: float = 0.7,
         popularity_weight: float = 0.3,
+        diversity_weight: float = 0.3,
+        use_diversity: bool = True,
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Hybrid recommendation combining multiple strategies
+        Hybrid recommendation combining multiple strategies with optional diversity re-ranking
         
         Args:
             query: Optional query text
@@ -241,6 +247,8 @@ class RecommenderService:
             top_k: Number of recommendations
             semantic_weight: Weight for semantic similarity
             popularity_weight: Weight for popularity
+            diversity_weight: Weight for diversity (0.0-1.0, only used if use_diversity=True)
+            use_diversity: Enable diversity re-ranking to avoid repetitive results
             filters: Optional filters
             
         Returns:
@@ -315,55 +323,103 @@ class RecommenderService:
         recommendations_list = list(recommendations.values())
         recommendations_list.sort(key=lambda x: x.get("hybrid_score", 0), reverse=True)
         
-        # Take top_k
-        top_recommendations = recommendations_list[:top_k]
+        # Apply diversity re-ranking if enabled
+        if use_diversity and len(recommendations_list) > 1:
+            # Update diversity weight if provided
+            if diversity_weight != self.diversity_reranker.diversity_weight:
+                self.diversity_reranker.diversity_weight = diversity_weight
+            
+            # Convert recommendations to document format for re-ranker
+            # DiversityReranker expects documents with 'payload' and 'score' fields
+            documents_for_rerank = []
+            for rec in recommendations_list:
+                doc = {
+                    'id': rec.get('item_id'),
+                    'score': rec.get('hybrid_score', 0.0),
+                    'payload': {k: v for k, v in rec.items() if k not in ['scores', 'hybrid_score']}
+                }
+                documents_for_rerank.append(doc)
+            
+            # Apply diversity re-ranking
+            reranked_docs = self.diversity_reranker.rerank(
+                documents=documents_for_rerank,
+                top_k=top_k
+            )
+            
+            # Convert back to recommendation format
+            top_recommendations = []
+            for doc in reranked_docs:
+                rec = doc['payload'].copy()
+                rec['item_id'] = doc['id']
+                rec['hybrid_score'] = doc.get('final_score', doc.get('score', 0.0))
+                rec['diversity_score'] = doc.get('diversity_score', 0.0)
+                top_recommendations.append(rec)
+            
+            logger.info(f"Generated {len(top_recommendations)} diverse hybrid recommendations")
+        else:
+            # Take top_k without diversity re-ranking
+            top_recommendations = recommendations_list[:top_k]
+            logger.info(f"Generated {len(top_recommendations)} hybrid recommendations")
         
-        logger.info(f"Generated {len(top_recommendations)} hybrid recommendations")
         return top_recommendations
     
     def recommend_for_user(
         self,
-        user_preferences: Dict[str, Any],
-        collection_name: str,
-        top_k: int = 10
+        user_id: Optional[Union[str, int]] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        collection_name: str = None,
+        top_k: int = 10,
+        check_cold_start: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Recommend items based on user preferences
-        (Demographic/profile-based recommendation)
+        Recommend items based on user preferences with cold start handling
         
         Args:
+            user_id: Optional user ID to check for cold start
             user_preferences: User preferences dict
             collection_name: Collection to search
             top_k: Number of recommendations
+            check_cold_start: Check if user is new and use cold start strategies
             
         Returns:
             List of recommended items
         """
+        # Check for cold start (new user)
+        if check_cold_start and user_id is not None:
+            if self._is_new_user(user_id):
+                logger.info(f"New user detected (user_id={user_id}), using cold start strategy")
+                return self.recommend_for_new_user(
+                    user_preferences=user_preferences,
+                    collection_name=collection_name,
+                    top_k=top_k
+                )
+        
         logger.info(f"Recommending based on user preferences")
         
         # Build query from preferences
         query_parts = []
         
-        if "preferred_location" in user_preferences:
-            query_parts.append(user_preferences["preferred_location"])
-        
-        if "preferred_price_range" in user_preferences:
-            price_range = user_preferences["preferred_price_range"]
-            query_parts.append(f"giá {price_range}")
-        
-        if "preferred_amenities" in user_preferences:
-            amenities = user_preferences["preferred_amenities"]
-            if isinstance(amenities, list):
-                query_parts.extend(amenities)
-            else:
-                query_parts.append(str(amenities))
+        if user_preferences:
+            if "preferred_location" in user_preferences:
+                query_parts.append(user_preferences["preferred_location"])
+            
+            if "preferred_price_range" in user_preferences:
+                price_range = user_preferences["preferred_price_range"]
+                query_parts.append(f"giá {price_range}")
+            
+            if "preferred_amenities" in user_preferences:
+                amenities = user_preferences["preferred_amenities"]
+                if isinstance(amenities, list):
+                    query_parts.extend(amenities)
+                else:
+                    query_parts.append(str(amenities))
         
         # Build query
         query = " ".join(query_parts) if query_parts else "khách sạn tốt"
         
         # Build filters
         filters = {}
-        if "min_rating" in user_preferences:
+        if user_preferences and "min_rating" in user_preferences:
             # Note: This would need proper filter implementation
             pass
         
@@ -374,4 +430,139 @@ class RecommenderService:
             top_k=top_k,
             filters=filters if filters else None
         )
+    
+    def _is_new_user(self, user_id: Union[str, int]) -> bool:
+        """
+        Check if user is new (has no interaction history)
+        
+        Args:
+            user_id: User ID to check
+            
+        Returns:
+            True if user is new, False otherwise
+        """
+        # TODO: Implement actual check against database/cache
+        # For now, this is a placeholder that always returns False
+        # In production, you would check:
+        # - User interaction history in database
+        # - User ratings/reviews count
+        # - User booking history
+        
+        # Example implementation (would need database connection):
+        # from ..data.connector import DatabaseConnector
+        # db = DatabaseConnector()
+        # interactions = db.get_user_interactions(user_id)
+        # return len(interactions) == 0
+        
+        logger.debug(f"Checking if user {user_id} is new (placeholder: returning False)")
+        return False
+    
+    def recommend_for_new_user(
+        self,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        collection_name: str = None,
+        top_k: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Recommend items for new users (cold start)
+        Strategy: Use demographic-based if preferences available, else popularity-based
+        
+        Args:
+            user_preferences: Optional user preferences (demographic info)
+            collection_name: Collection to search
+            top_k: Number of recommendations
+            
+        Returns:
+            List of recommended items
+        """
+        logger.info("Cold start: Recommending for new user")
+        
+        # Strategy 1: Demographic-based if preferences available
+        if user_preferences and any(key in user_preferences for key in [
+            'preferred_location', 'preferred_price_range', 'preferred_amenities',
+            'age_group', 'travel_purpose', 'budget_range'
+        ]):
+            logger.info("Using demographic-based recommendation for new user")
+            return self.recommend_for_user(
+                user_id=None,
+                user_preferences=user_preferences,
+                collection_name=collection_name,
+                top_k=top_k,
+                check_cold_start=False  # Already in cold start, don't check again
+            )
+        
+        # Strategy 2: Popularity-based fallback
+        logger.info("Using popularity-based recommendation for new user (no preferences)")
+        return self.recommend_popular(
+            collection_name=collection_name,
+            top_k=top_k,
+            use_weighted_rating=True
+        )
+    
+    def recommend_for_new_item(
+        self,
+        item_features: Dict[str, Any],
+        collection_name: str = None,
+        top_k: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Recommend similar items for a new item (cold start)
+        Strategy: Content-based similarity using item features
+        
+        Args:
+            item_features: Item features dict (e.g., description, amenities, location)
+            collection_name: Collection to search
+            top_k: Number of recommendations
+            
+        Returns:
+            List of similar items
+        """
+        logger.info("Cold start: Recommending similar items for new item")
+        
+        # Build query from item features
+        query_parts = []
+        
+        # Extract text features for semantic search
+        if 'description' in item_features:
+            query_parts.append(item_features['description'])
+        if 'hotel_name' in item_features:
+            query_parts.append(item_features['hotel_name'])
+        if 'amenities' in item_features:
+            amenities = item_features['amenities']
+            if isinstance(amenities, list):
+                query_parts.extend(amenities)
+            else:
+                query_parts.append(str(amenities))
+        if 'area_name' in item_features:
+            query_parts.append(item_features['area_name'])
+        
+        # Build query
+        query = " ".join(query_parts) if query_parts else "khách sạn"
+        
+        # Get semantic recommendations
+        similar_items = self.recommend_by_query(
+            query=query,
+            collection_name=collection_name,
+            top_k=top_k * 2,  # Get more for filtering
+            filters=None
+        )
+        
+        # If not enough similar items, supplement with popular items
+        if len(similar_items) < top_k:
+            logger.info(f"Only {len(similar_items)} similar items found, supplementing with popular items")
+            popular_items = self.recommend_popular(
+                collection_name=collection_name,
+                top_k=top_k - len(similar_items),
+                use_weighted_rating=True
+            )
+            
+            # Avoid duplicates
+            similar_ids = {item.get('item_id') for item in similar_items}
+            for item in popular_items:
+                if item.get('item_id') not in similar_ids:
+                    similar_items.append(item)
+                    if len(similar_items) >= top_k:
+                        break
+        
+        return similar_items[:top_k]
 

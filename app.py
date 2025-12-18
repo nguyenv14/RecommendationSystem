@@ -37,7 +37,8 @@ from src.core import (
     RetrieverService,
     GeneratorService,
     RecommenderService,
-    RAGService
+    RAGService,
+    IndexingService
 )
 
 # Setup logging
@@ -61,6 +62,7 @@ recommender_service = None
 embedding_service = None
 sparse_embedding_service = None
 vectorstore_service = None
+indexing_service = None
 
 
 def ensure_collections_ready():
@@ -136,7 +138,7 @@ def ensure_collections_ready():
 
 def initialize_services():
     """Initialize all services"""
-    global rag_service, recommender_service, embedding_service, sparse_embedding_service, vectorstore_service
+    global rag_service, recommender_service, embedding_service, sparse_embedding_service, vectorstore_service, indexing_service
     
     logger.info("🚀 Initializing services...")
     
@@ -193,6 +195,13 @@ def initialize_services():
         recommender_service = RecommenderService(
             retriever_service=retriever_service,
             embedding_service=embedding_service,
+            vectorstore_service=vectorstore_service
+        )
+        
+        # Initialize indexing service
+        indexing_service = IndexingService(
+            embedding_service=embedding_service,
+            sparse_embedding_service=sparse_embedding_service,
             vectorstore_service=vectorstore_service
         )
         
@@ -854,6 +863,74 @@ def recommend_hybrid():
         logger.error(f"Error in hybrid recommendation: {e}")
         return ApiResponse.error(
             message=f'Error generating hybrid recommendations: {str(e)}',
+            code=500
+        )
+
+
+# ==================== Indexing Endpoints ====================
+
+@app.route('/api/indexing/status', methods=['GET'])
+def get_indexing_status():
+    """Get indexing status of all collections"""
+    if not indexing_service:
+        return ApiResponse.error(
+            message='Indexing service not initialized',
+            code=500
+        )
+    
+    try:
+        status = indexing_service.get_indexing_status()
+        return ApiResponse.success(
+            data=status,
+            message='Indexing status retrieved successfully'
+        )
+    except Exception as e:
+        logger.error(f"Error getting indexing status: {e}")
+        return ApiResponse.error(
+            message=f'Error getting indexing status: {str(e)}',
+            code=500
+        )
+
+
+@app.route('/api/indexing/recommendation', methods=['POST'])
+def index_recommendation():
+    """Index hotels for recommendation system"""
+    if not indexing_service:
+        return ApiResponse.error(
+            message='Indexing service not initialized',
+            code=500
+        )
+    
+    try:
+        data = request.json or {}
+        collection_name = data.get('collection_name')
+        recreate_collection = data.get('recreate_collection', False)
+        batch_size = data.get('batch_size', 10)
+        
+        logger.info(f"🎯 Starting recommendation indexing...")
+        
+        result = indexing_service.index_recommendation_hotels(
+            collection_name=collection_name,
+            recreate_collection=recreate_collection,
+            batch_size=batch_size
+        )
+        
+        if result.get('success'):
+            return ApiResponse.success(
+                data=result,
+                message='Recommendation indexing completed successfully'
+            )
+        else:
+            return ApiResponse.error(
+                message=f"Indexing failed: {result.get('error', 'Unknown error')}",
+                code=500,
+                data=result
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in recommendation indexing: {e}")
+        return ApiResponse.error(
+            message=f'Error indexing recommendation data: {str(e)}',
             code=500
         )
 

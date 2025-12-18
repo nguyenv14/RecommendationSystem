@@ -11,6 +11,7 @@ from .retriever import RetrieverService
 from .generator import GeneratorService
 from .query_preprocessor import QueryPreprocessor
 from .response_cache import ResponseCache
+from .reranker import Reranker
 from ..shared import get_logger
 from ..config import get_settings
 
@@ -128,6 +129,9 @@ class RAGService:
         # Initialize optimizations
         self.query_preprocessor = QueryPreprocessor()
         self.response_cache = ResponseCache(ttl=response_cache_ttl)
+        
+        # Initialize re-ranker for better retrieval quality
+        self.reranker = Reranker(enable_reranking=True)
         
         # Initialize query router and SQL generator (for statistical queries)
         self.query_router = None
@@ -284,8 +288,19 @@ class RAGService:
             # Step 5: Hybrid Search - TODO: implement
             # For now, just use semantic search results
             
-            # Step 6: Re-rank Results - TODO: implement
-            # For now, documents are already sorted by score from Qdrant
+            # Step 6: Re-rank Results using Cross-Encoder for better precision
+            if len(documents) > 0 and self.reranker.is_available():
+                logger.info(f"Re-ranking {len(documents)} documents with cross-encoder")
+                documents = self.reranker.rerank(
+                    query=question,
+                    documents=documents,
+                    top_k=top_k * 2  # Re-rank more, then take top_k in context building
+                )
+                logger.info(f"✅ Re-ranked documents (top score: {documents[0].get('rerank_score', 0):.4f})")
+            else:
+                if not self.reranker.is_available():
+                    logger.debug("Re-ranker not available, using original ranking")
+                # Keep original ranking if reranker not available
             
             # Step 7-8: Build Context (với token limit) + Generate Answer
             result = self.generator.generate_from_documents(

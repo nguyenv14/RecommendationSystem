@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config import get_settings, Collections
 from src.shared import get_logger, setup_logging
-from src.core import VectorStoreService
+from src.core import VectorStoreService, IndexingService
 from qdrant_client.models import Distance, VectorParams
 
 # Setup logging
@@ -169,7 +169,7 @@ def index_rag_data():
 def index_recommendation_data():
     """
     Index data cho Recommendation system
-    Logic từ recommendation/semantic_recommendation_system.py
+    Sử dụng IndexingService từ src/core/
     """
     logger.info("")
     logger.info("=" * 80)
@@ -177,137 +177,51 @@ def index_recommendation_data():
     logger.info("=" * 80)
     
     try:
-        # Import recommendation system
-        sys.path.insert(0, str(Path(__file__).parent / 'recommendation'))
-        from semantic_recommendation_system import SemanticRecommendationSystem
-        import pandas as pd
-        import numpy as np
-        from qdrant_client.models import PointStruct
-        from sqlalchemy import create_engine, text
-        
-        # Initialize recommendation system
-        logger.info("Initializing recommendation system...")
+        # Initialize indexing service
+        logger.info("Initializing indexing service...")
         settings = get_settings()
-        rec_system = SemanticRecommendationSystem(
-            model_name=settings.EMBEDDING_MODEL,  # Use bge-m3 for Ollama (better for Vietnamese)
-            qdrant_url=settings.QDRANT_URL,
-            use_ollama=True,  # Always use Ollama (no PyTorch needed)
-            ollama_url=settings.OLLAMA_URL
-        )
-        rec_system.collection_name = settings.REC_COLLECTION_HOTELS
         
-        # Fetch hotels from database using SQLAlchemy engine
-        logger.info("Fetching hotels from database...")
-        settings = get_settings()
-        from sqlalchemy import create_engine, text
+        from src.core import EmbeddingService, SparseEmbeddingService, VectorStoreService
         
-        # Create SQLAlchemy engine for pandas
-        engine = create_engine(
-            f"mysql+pymysql://{settings.MYSQL_USER}:{settings.MYSQL_PASSWORD}@"
-            f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}",
-            pool_pre_ping=True
+        embedding_service = EmbeddingService(
+            provider="ollama",
+            model_name=settings.EMBEDDING_MODEL,
+            ollama_url=settings.OLLAMA_URL,
+            cache_enabled=settings.EMBEDDING_CACHE_ENABLED
         )
         
-        query = "SELECT * FROM tbl_hotel WHERE hotel_status = 1"
-        hotels_df = pd.read_sql(text(query), engine)
-        engine.dispose()
+        sparse_service = None
+        try:
+            sparse_service = SparseEmbeddingService(
+                model_name="Qdrant/bm25",
+                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+            )
+        except Exception as e:
+            logger.warning(f"Sparse embedding service not available: {e}")
         
-        logger.info(f"Fetched {len(hotels_df)} hotels")
+        vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
         
-        # Clean dataframe
-        logger.info("\n📊 Cleaning data...")
-        hotels_df = hotels_df.fillna({
-            'hotel_name': '',
-            'hotel_desc': '',
-            'hotel_placedetails': '',
-            'hotel_tag_keyword': '',
-            'hotel_rank': 0,
-            'hotel_price_average': 0
-        })
+        indexing_service = IndexingService(
+            embedding_service=embedding_service,
+            sparse_embedding_service=sparse_service,
+            vectorstore_service=vectorstore_service
+        )
         
-        # Prepare hotel texts
-        hotel_texts = []
-        hotel_metadata = []
+        # Index hotels
+        result = indexing_service.index_recommendation_hotels(
+            collection_name=settings.REC_COLLECTION_HOTELS,
+            recreate_collection=False,
+            batch_size=10
+        )
         
-        for idx, hotel in hotels_df.iterrows():
-            hotel_id = hotel['hotel_id']
-            
-            # Combine description
-            description_parts = []
-            if pd.notna(hotel.get('hotel_name')) and str(hotel.get('hotel_name')).strip():
-                description_parts.append(f"Tên: {hotel['hotel_name']}")
-            if pd.notna(hotel.get('hotel_desc')) and str(hotel.get('hotel_desc')).strip():
-                description_parts.append(str(hotel['hotel_desc'])[:500])  # Limit length
-            if pd.notna(hotel.get('hotel_placedetails')) and str(hotel.get('hotel_placedetails')).strip():
-                description_parts.append(f"Địa chỉ: {hotel['hotel_placedetails']}")
-            
-            full_description = ' '.join(description_parts)
-            
-            # Skip if no description
-            if not full_description or len(full_description.strip()) < 10:
-                logger.warning(f"Skipping hotel {hotel_id}: no valid description")
-                continue
-            
-            # Limit description length
-            if len(full_description) > 512:
-                full_description = full_description[:512]
-            
-            hotel_texts.append(full_description)
-            hotel_metadata.append({
-                'hotel_id': int(hotel_id),
-                'hotel_name': str(hotel.get('hotel_name', f'Hotel {hotel_id}')),
-                'hotel_rank': float(hotel.get('hotel_rank', 0)),
-                'hotel_price_average': float(hotel.get('hotel_price_average', 0))
-            })
-        
-        logger.info(f"Prepared {len(hotel_texts)} hotels for indexing")
-        
-        # Create embeddings
-        logger.info("\n📊 Creating embeddings...")
-        embeddings = rec_system.create_embeddings(hotel_texts)
-        
-        # Validate embeddings
-        valid_points = []
-        for idx, (embedding, metadata) in enumerate(zip(embeddings, hotel_metadata)):
-            try:
-                # Convert to list
-                embedding_list = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
-                
-                # Check for NaN/Inf
-                if not all(np.isfinite(embedding_list)):
-                    logger.warning(f"Skipping hotel {metadata['hotel_id']}: invalid embedding (NaN/Inf)")
-                    continue
-                
-                # Create point (with sparse vector if available)
-                # Note: For hybrid search, sparse vectors should be added during indexing
-                # This is a basic version - use index_with_hybrid.py for full hybrid support
-                point = PointStruct(
-                    id=metadata['hotel_id'],
-                    vector=embedding_list,  # Dense vector only
-                    payload=metadata
-                )
-                valid_points.append(point)
-                
-            except Exception as e:
-                logger.warning(f"Skipping hotel {metadata['hotel_id']}: {e}")
-                continue
-        
-        logger.info(f"Valid points: {len(valid_points)}")
-        
-        # Upload to Qdrant in batches
-        if valid_points:
-            logger.info("\n📊 Uploading to Qdrant...")
-            batch_size = 10
-            for i in range(0, len(valid_points), batch_size):
-                batch = valid_points[i:i+batch_size]
-                rec_system.client.upsert(
-                    collection_name=rec_system.collection_name,
-                    points=batch
-                )
-                logger.info(f"Uploaded batch {i//batch_size + 1}/{(len(valid_points)-1)//batch_size + 1}")
-        
-        logger.info("\n✅ Recommendation data indexed successfully!")
-        return True
+        if result.get('success'):
+            logger.info(f"\n✅ Recommendation data indexed successfully!")
+            logger.info(f"   Indexed: {result.get('indexed')} hotels")
+            logger.info(f"   Skipped: {result.get('skipped')} hotels")
+            return True
+        else:
+            logger.error(f"❌ Recommendation indexing failed: {result.get('error')}")
+            return False
         
     except Exception as e:
         logger.error(f"❌ Recommendation indexing failed: {e}")
@@ -389,7 +303,8 @@ def main():
             logger.info("\n✅ All collections up-to-date, skipping indexing")
             logger.info("\n💡 To re-index manually:")
             logger.info("   - RAG: cd rag/ && python simple_rag_system.py")
-            logger.info("   - Recommendation: cd recommendation/ && python semantic_recommendation_system.py")
+            logger.info("   - Recommendation: Use API endpoint POST /api/indexing/recommendation")
+            logger.info("   - Or: python setup_collections.py (with AUTO_INDEX_DATA=true)")
         
         # 5. Final Verification
         logger.info("")
