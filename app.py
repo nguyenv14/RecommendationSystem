@@ -76,20 +76,22 @@ def ensure_collections_ready():
     from qdrant_client.models import Distance, VectorParams, SparseVectorParams
     
     try:
-        # Khởi tạo VectorStore để check
-        temp_vectorstore = VectorStoreService(url=settings.QDRANT_URL)
-        client = temp_vectorstore.client
+        # Tái sử dụng global vectorstore_service nếu có, không thì tạo mới
+        global vectorstore_service
+        if vectorstore_service is None:
+            vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
+        client = vectorstore_service.client
         
         # Danh sách collections cần thiết
         required_collections = [
             (Collections.RAG_HOTELS, "RAG Hotels (Chatbot)", 1024, "🏨"),
             (Collections.RAG_COUPONS, "RAG Coupons (Chatbot)", 1024, "🎟️"),
-            (Collections.RECOMMENDATION_HOTELS, "Recommendation (Similar Hotels)", 384, "🎯"),
+            (Collections.RECOMMENDATION_HOTELS, "Recommendation (Similar Hotels)", 1024, "🎯"),  # Fixed: 1024 not 384
         ]
         
         # Lấy danh sách collections hiện có
         existing_collections = client.get_collections()
-        existing_names = [col.name for col in existing_collections.collections]
+        existing_names = {col.name for col in existing_collections.collections}  # Set for O(1) lookup
         
         # Tạo collections nếu chưa có (với hybrid search support)
         for collection_name, description, vector_size, emoji in required_collections:
@@ -935,6 +937,90 @@ def index_recommendation():
         )
 
 
+@app.route('/api/indexing/rag/rooms', methods=['POST'])
+def index_rag_rooms():
+    """Index rooms for RAG system"""
+    if not indexing_service:
+        return ApiResponse.error(
+            message='Indexing service not initialized',
+            code=500
+        )
+    
+    try:
+        data = request.json or {}
+        collection_name = data.get('collection_name')
+        batch_size = data.get('batch_size', 50)
+        
+        logger.info(f"🔄 Starting RAG rooms indexing...")
+        
+        result = indexing_service.index_rag_rooms(
+            collection_name=collection_name,
+            rag_service=rag_service,  # Pass RAG service if available
+            batch_size=batch_size
+        )
+        
+        if result.get('success'):
+            return ApiResponse.success(
+                data=result,
+                message='RAG rooms indexing completed successfully'
+            )
+        else:
+            return ApiResponse.error(
+                message=f"Indexing failed: {result.get('error', 'Unknown error')}",
+                code=500,
+                data=result
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in RAG rooms indexing: {e}")
+        return ApiResponse.error(
+            message=f'Error indexing RAG rooms: {str(e)}',
+            code=500
+        )
+
+
+@app.route('/api/indexing/rag/type-rooms', methods=['POST'])
+def index_rag_type_rooms():
+    """Index type_rooms for RAG system"""
+    if not indexing_service:
+        return ApiResponse.error(
+            message='Indexing service not initialized',
+            code=500
+        )
+    
+    try:
+        data = request.json or {}
+        collection_name = data.get('collection_name')
+        batch_size = data.get('batch_size', 50)
+        
+        logger.info(f"🔄 Starting RAG type_rooms indexing...")
+        
+        result = indexing_service.index_rag_type_rooms(
+            collection_name=collection_name,
+            rag_service=rag_service,  # Pass RAG service if available
+            batch_size=batch_size
+        )
+        
+        if result.get('success'):
+            return ApiResponse.success(
+                data=result,
+                message='RAG type_rooms indexing completed successfully'
+            )
+        else:
+            return ApiResponse.error(
+                message=f"Indexing failed: {result.get('error', 'Unknown error')}",
+                code=500,
+                data=result
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in RAG type_rooms indexing: {e}")
+        return ApiResponse.error(
+            message=f'Error indexing RAG type_rooms: {str(e)}',
+            code=500
+        )
+
+
 if __name__ == '__main__':
     logger.info("="*70)
     logger.info("🏨 Unified Hotel Recommendation & RAG System v3.0")
@@ -985,6 +1071,10 @@ if __name__ == '__main__':
     logger.info(f"   Recommend Similar: GET  http://localhost:{port}/api/recommend/similar/<id>")
     logger.info(f"   Recommend Popular: GET  http://localhost:{port}/api/recommend/popular")
     logger.info(f"   Hybrid Recommend: POST  http://localhost:{port}/api/recommend/hybrid")
+    logger.info(f"   Indexing Status: GET    http://localhost:{port}/api/indexing/status")
+    logger.info(f"   Index Recommendation: POST http://localhost:{port}/api/indexing/recommendation")
+    logger.info(f"   Index RAG Rooms: POST   http://localhost:{port}/api/indexing/rag/rooms")
+    logger.info(f"   Index RAG Type Rooms: POST http://localhost:{port}/api/indexing/rag/type-rooms")
     logger.info("")
     logger.info(f"🌐 Open http://localhost:{port} in your browser")
     logger.info("="*70)

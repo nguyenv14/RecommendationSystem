@@ -121,30 +121,75 @@ def index_rag_data():
         # Index rooms and type_rooms (cùng collection với hotels)
         logger.info("\n📊 Indexing rooms and type_rooms...")
         try:
-            from data.processor import DataProcessor
-            from data.connector import DatabaseConnector
-            from data.normalizer import HotelDataNormalizer
+            # Sử dụng IndexingService từ src/core/ thay vì old implementation
+            from src.core import EmbeddingService, SparseEmbeddingService, VectorStoreService, RAGService
             
-            processor = DataProcessor(rag=rag)
+            # Initialize IndexingService
+            embedding_service = EmbeddingService(
+                provider="ollama",
+                model_name=settings.EMBEDDING_MODEL,
+                ollama_url=settings.OLLAMA_URL,
+                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+            )
+            
+            sparse_service = None
+            try:
+                sparse_service = SparseEmbeddingService(
+                    model_name="Qdrant/bm25",
+                    cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+                )
+            except Exception as e:
+                logger.warning(f"Sparse embedding service not available: {e}")
+            
+            vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
+            
+            indexing_service = IndexingService(
+                embedding_service=embedding_service,
+                sparse_embedding_service=sparse_service,
+                vectorstore_service=vectorstore_service
+            )
+            
+            # Initialize RAGService để pass vào indexing methods
+            rag_service = RAGService(
+                embedding_service=embedding_service,
+                vectorstore_service=vectorstore_service,
+                collection_name=settings.RAG_COLLECTION_HOTELS
+            )
             
             # Index rooms
             logger.info("  🔄 Indexing rooms...")
-            processor.process_and_index_rooms(
-                recreate_collection=False,
+            rooms_result = indexing_service.index_rag_rooms(
+                collection_name=settings.RAG_COLLECTION_HOTELS,
+                rag_service=rag_service,
                 batch_size=50
             )
+            
+            if not rooms_result.get('success'):
+                logger.warning(f"  ⚠️  Rooms indexing failed: {rooms_result.get('error')}")
             
             # Index type_rooms
             logger.info("  🔄 Indexing type_rooms...")
-            processor.process_and_index_type_rooms(
-                recreate_collection=False,
+            type_rooms_result = indexing_service.index_rag_type_rooms(
+                collection_name=settings.RAG_COLLECTION_HOTELS,
+                rag_service=rag_service,
                 batch_size=50
             )
             
-            logger.info("  ✅ Rooms and type_rooms indexed successfully!")
+            if not type_rooms_result.get('success'):
+                logger.warning(f"  ⚠️  Type rooms indexing failed: {type_rooms_result.get('error')}")
+            
+            if rooms_result.get('success') and type_rooms_result.get('success'):
+                logger.info("  ✅ Rooms and type_rooms indexed successfully!")
+                logger.info(f"     - Rooms: {rooms_result.get('indexed', 0)} indexed")
+                logger.info(f"     - Type Rooms: {type_rooms_result.get('indexed', 0)} indexed")
+            else:
+                logger.warning("  ⚠️  Some indexing failed, but continuing...")
+                
         except Exception as e:
             logger.warning(f"  ⚠️  Failed to index rooms/type_rooms: {e}")
             logger.warning("  Continuing with coupons indexing...")
+            import traceback
+            logger.debug(traceback.format_exc())
         
         # Index coupons  
         logger.info("\n📊 Indexing coupons...")
