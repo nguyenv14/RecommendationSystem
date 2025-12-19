@@ -10,8 +10,7 @@ from .retriever import RetrieverService
 from .generator import GeneratorService
 from .recommender import RecommenderService
 from .rag import RAGService
-from .popularity import PopularityRecommender
-from .collaborative import CollaborativeRecommender
+from .indexing import IndexingService
 
 __all__ = [
     'EmbeddingService',
@@ -21,7 +20,6 @@ __all__ = [
     'GeneratorService',
     'RecommenderService',
     'RAGService',
-    'PopularityRecommender',
-    'CollaborativeRecommender',
+    'IndexingService',
 ]
 

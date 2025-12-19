@@ -230,6 +230,180 @@ class HotelDataNormalizer:
         else:
             return "giá rất cao"
     
+    def create_room_semantic_text(self, row: pd.Series) -> str:
+        """
+        Tạo semantic text chuyên biệt cho Room.
+        Format: [Tên KS] cung cấp [Tên Phòng] loại [Loại] giá [Giá]...
+        """
+        text_parts = []
+        
+        # 1. Định danh (Quan trọng nhất để search tìm ra đúng khách sạn)
+        hotel_name = str(row.get("hotel_name", "")).strip()
+        room_name = str(row.get("room_name", "")).strip()
+        
+        text_parts.append(f"Tại khách sạn {hotel_name} có phòng {room_name}")
+        
+        # 2. Thông tin phòng
+        if pd.notna(row.get("room_amount_of_people")):
+            people = int(row["room_amount_of_people"])
+            text_parts.append(f"Phòng cho {people} người")
+        
+        if pd.notna(row.get("room_acreage")):
+            acreage = int(row["room_acreage"])
+            text_parts.append(f"Diện tích: {acreage} m²")
+        
+        if pd.notna(row.get("room_view")):
+            view = str(row["room_view"]).strip()
+            if view:
+                text_parts.append(f"Hướng: {view}")
+        
+        # 3. Giá cả & Phân khúc
+        if pd.notna(row.get("room_price")):
+            price = float(row["room_price"])
+            price_str = "{:,.0f}".format(price)
+            text_parts.append(f"Giá phòng niêm yết: {price_str} VND/đêm")
+            text_parts.append(f"Phân khúc: {self._categorize_price(price)}")
+            
+            # Giá sale nếu có
+            if pd.notna(row.get("type_room_price_sale")):
+                price_sale = float(row["type_room_price_sale"])
+                if price_sale > 0 and price_sale < price:
+                    price_sale_str = "{:,.0f}".format(price_sale)
+                    text_parts.append(f"Giá khuyến mãi: {price_sale_str} VND/đêm")
+        
+        # 4. Số lượng giường
+        if pd.notna(row.get("type_room_bed")):
+            bed = int(row["type_room_bed"])
+            text_parts.append(f"Số giường: {bed}")
+        
+        # 5. Số lượng phòng
+        if pd.notna(row.get("room_amount")):
+            amount = int(row["room_amount"])
+            text_parts.append(f"Số lượng phòng: {amount}")
+        
+        # 6. Điều kiện (type_room_condition là int: 0 hoặc 1)
+        if pd.notna(row.get("type_room_condition")):
+            cond = int(row["type_room_condition"])
+            if cond == 1:
+                text_parts.append("Có điều hòa")
+            else:
+                text_parts.append("Không có điều hòa")
+            
+        # 7. Thông tin bổ sung
+        if pd.notna(row.get("area_name")):
+            text_parts.append(f"Khu vực: {row['area_name']}")
+            
+        return ". ".join(text_parts)
+
+    def normalize_rooms(self, rooms_df: pd.DataFrame) -> pd.DataFrame:
+        """Batch normalize rooms"""
+        normalized_data = []
+        for _, row in rooms_df.iterrows():
+            record = row.to_dict()
+            record["semantic_text"] = self.create_room_semantic_text(row)
+            
+            # Metadata bổ trợ cho Hybrid Search sau này
+            record["search_price"] = float(row.get("room_price", 0))
+            record["search_hotel_name"] = self.normalize_text(row.get("hotel_name", ""))
+            
+            normalized_data.append(record)
+            
+        return pd.DataFrame(normalized_data)
+    
+    def create_type_room_semantic_text(self, row: pd.Series) -> str:
+        """
+        Tạo semantic text chuyên biệt cho Type Room.
+        Format: Loại phòng [Tên] được sử dụng tại các khách sạn [Danh sách KS]...
+        """
+        text_parts = []
+        
+        # 1. Định danh loại phòng
+        type_name = str(row.get("type_room_name", "")).strip()
+        type_id = row.get("type_room_id", "")
+        
+        text_parts.append(f"Loại phòng {type_name}")
+        text_parts.append(f"Mã loại phòng: {type_id}")
+        
+        # 2. Danh sách khách sạn sử dụng loại phòng này
+        if pd.notna(row.get("hotel_names")):
+            hotel_names = str(row["hotel_names"]).strip()
+            if hotel_names:
+                text_parts.append(f"Được sử dụng tại các khách sạn: {hotel_names}")
+        
+        # 3. Khu vực
+        if pd.notna(row.get("area_names")):
+            area_names = str(row["area_names"]).strip()
+            if area_names:
+                # Remove duplicates
+                unique_areas = list(set(area_names.split(' | ')))
+                text_parts.append(f"Khu vực: {', '.join(unique_areas)}")
+        
+        # 4. Số giường
+        if pd.notna(row.get("type_room_bed")):
+            bed = int(row["type_room_bed"])
+            text_parts.append(f"Số giường: {bed}")
+        
+        # 5. Điều kiện (type_room_condition là int: 0 hoặc 1)
+        if pd.notna(row.get("type_room_condition")):
+            cond = int(row["type_room_condition"])
+            if cond == 1:
+                text_parts.append("Có điều hòa")
+            else:
+                text_parts.append("Không có điều hòa")
+        
+        # 6. Giá cả (min, max, avg)
+        if pd.notna(row.get("min_price")):
+            min_price = float(row["min_price"])
+            max_price = float(row.get("max_price", min_price))
+            avg_price = float(row.get("avg_price", min_price))
+            
+            min_price_str = "{:,.0f}".format(min_price)
+            max_price_str = "{:,.0f}".format(max_price)
+            avg_price_str = "{:,.0f}".format(avg_price)
+            
+            if min_price == max_price:
+                text_parts.append(f"Giá phòng: {min_price_str} VND/đêm")
+            else:
+                text_parts.append(f"Giá phòng từ {min_price_str} đến {max_price_str} VND/đêm")
+                text_parts.append(f"Giá trung bình: {avg_price_str} VND/đêm")
+            
+            # Phân khúc giá
+            text_parts.append(f"Phân khúc: {self._categorize_price(avg_price)}")
+        
+        # 7. Số lượng phòng
+        if pd.notna(row.get("room_count")):
+            room_count = int(row["room_count"])
+            text_parts.append(f"Số lượng phòng: {room_count} phòng")
+        
+        # 8. Hạng khách sạn
+        if pd.notna(row.get("hotel_ranks")):
+            ranks_str = str(row["hotel_ranks"]).strip()
+            if ranks_str:
+                ranks = [int(r) for r in ranks_str.split(',') if r.strip().isdigit()]
+                if ranks:
+                    unique_ranks = sorted(set(ranks))
+                    rank_text = ', '.join([f"{r} sao" for r in unique_ranks])
+                    text_parts.append(f"Hạng khách sạn: {rank_text}")
+        
+        return ". ".join(text_parts)
+
+    def normalize_type_rooms(self, type_rooms_df: pd.DataFrame) -> pd.DataFrame:
+        """Batch normalize type rooms"""
+        normalized_data = []
+        for _, row in type_rooms_df.iterrows():
+            record = row.to_dict()
+            record["semantic_text"] = self.create_type_room_semantic_text(row)
+            
+            # Metadata bổ trợ cho Hybrid Search sau này
+            record["search_min_price"] = float(row.get("min_price", 0))
+            record["search_max_price"] = float(row.get("max_price", 0))
+            record["search_avg_price"] = float(row.get("avg_price", 0))
+            record["search_hotel_names"] = self.normalize_text(row.get("hotel_names", ""))
+            
+            normalized_data.append(record)
+            
+        return pd.DataFrame(normalized_data)
+    
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """
         Calculate similarity between two texts

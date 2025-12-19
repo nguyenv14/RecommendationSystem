@@ -51,7 +51,12 @@ pydantic-core>=2.14.0
 # ==================== Sparse Embeddings (BM25) for Hybrid Search ====================
 # FastEmbed for fast sparse vector generation (BM25)
 # Note: Version 0.2.11 doesn't exist, using 0.2.7 (latest 0.2.x compatible with Python 3.10)
-fastembed==0.2.7
+
+# ==================== RAG Optimizations ====================
+# sentence-transformers for cross-encoder re-ranking (improves precision by 15-20%)
+sentence-transformers==2.3.1
+# tiktoken for accurate token counting (prevents context overflow)
+tiktoken==0.5.2
 
 # ==================== Caching ====================
 redis==5.0.1

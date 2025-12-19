@@ -42,7 +42,12 @@ class RetrieverService:
         self.embedding_service = embedding_service
         self.vectorstore_service = vectorstore_service
         self.sparse_embedding_service = sparse_embedding_service
-        self.use_hybrid_search = use_hybrid_search and sparse_embedding_service is not None
+        # Check if sparse embedding service is available
+        sparse_available = sparse_embedding_service is not None and (
+            hasattr(sparse_embedding_service, 'is_available') and 
+            sparse_embedding_service.is_available
+        )
+        self.use_hybrid_search = use_hybrid_search and sparse_available
         self.default_collection = default_collection
         self.default_top_k = default_top_k
         
@@ -93,14 +98,23 @@ class RetrieverService:
             # Generate sparse vector if using hybrid search
             query_sparse_vector = None
             if use_hybrid_search and self.sparse_embedding_service:
-                try:
-                    sparse_dict = self.sparse_embedding_service.embed_query(query)
-                    if sparse_dict:
-                        query_sparse_vector = sparse_dict
-                        logger.debug(f"Generated sparse vector with {len(sparse_dict)} tokens")
-                except Exception as e:
-                    logger.warning(f"Failed to generate sparse vector, falling back to semantic only: {e}")
+                # Check if sparse embedding service is available
+                if hasattr(self.sparse_embedding_service, 'is_available') and \
+                   not self.sparse_embedding_service.is_available:
+                    logger.debug("Sparse embedding service not available, using semantic search only")
                     use_hybrid_search = False
+                else:
+                    try:
+                        sparse_dict = self.sparse_embedding_service.embed_query(query)
+                        if sparse_dict:
+                            query_sparse_vector = sparse_dict
+                            logger.debug(f"Generated sparse vector with {len(sparse_dict)} tokens")
+                        else:
+                            logger.debug("Empty sparse vector, falling back to semantic only")
+                            use_hybrid_search = False
+                    except Exception as e:
+                        logger.warning(f"Failed to generate sparse vector, falling back to semantic only: {e}")
+                        use_hybrid_search = False
             
             # Search
             if use_hybrid_search and query_sparse_vector:
