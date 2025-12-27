@@ -115,7 +115,7 @@ class SmartChunker:
                              hotel_data: Dict,
                              semantic_text: str) -> List[Document]:
         """
-        Chunk hotel document với đầy đủ metadata
+        Chunk hotel document với đầy đủ metadata và Golden Summary
         
         Args:
             hotel_data: Hotel metadata (hotel_id, hotel_name, etc.)
@@ -124,6 +124,26 @@ class SmartChunker:
         Returns:
             List of Document objects với metadata đầy đủ
         """
+        # 1. TẠO "GOLDEN SUMMARY" (Thông tin cốt lõi)
+        # Đây là đoạn văn ngắn (khoảng 50-100 tokens) chứa đủ thông tin ra quyết định
+        # Nó sẽ đi kèm với MỌI chunk của khách sạn này.
+        hotel_rank = hotel_data.get("hotel_rank")
+        hotel_price = hotel_data.get("hotel_price_average", 0)
+        area_name = hotel_data.get("area_name", "")
+        price_category = hotel_data.get("price_category", "")
+        
+        golden_summary_parts = [f"Tên: {hotel_data.get('hotel_name', '')}"]
+        if hotel_rank:
+            golden_summary_parts.append(f"Hạng: {hotel_rank} sao")
+        if hotel_price and hotel_price > 0:
+            golden_summary_parts.append(f"Giá TB: {hotel_price:,.0f} VND")
+        if area_name:
+            golden_summary_parts.append(f"Vị trí: {area_name}")
+        if price_category:
+            golden_summary_parts.append(f"Phân khúc: {price_category}")
+        
+        golden_summary = "\n".join([f"- {part}" for part in golden_summary_parts])
+        
         # Split text into chunks
         text_chunks = self.split_text(semantic_text)
         
@@ -140,6 +160,9 @@ class SmartChunker:
                 "brand_name": hotel_data.get("brand_name", ""),
                 "price_category": hotel_data.get("price_category", ""),
                 "normalized_name": hotel_data.get("normalized_name", ""),
+                # --- QUAN TRỌNG: Thêm Golden Summary vào metadata ---
+                "hotel_info_summary": golden_summary,  # Thông tin cốt lõi đi kèm mọi chunk
+                "chunk_content": chunk,  # Lưu nội dung gốc của chunk (backup)
                 # Chunk-specific metadata
                 "chunk_index": idx,  # Index of chunk (0, 1, 2, ...)
                 "total_chunks": len(text_chunks),  # Total number of chunks
@@ -555,7 +578,25 @@ class StructuredChunker:
                                  total_sections: int,
                                  sub_chunk_index: int,
                                  total_sub_chunks: int) -> Dict:
-        """Create metadata for a section chunk"""
+        """Create metadata for a section chunk with Golden Summary"""
+        # 1. TẠO "GOLDEN SUMMARY" (Thông tin cốt lõi)
+        hotel_rank = hotel_data.get("hotel_rank")
+        hotel_price = hotel_data.get("hotel_price_average", 0)
+        area_name = hotel_data.get("area_name", "")
+        price_category = hotel_data.get("price_category", "")
+        
+        golden_summary_parts = [f"Tên: {hotel_data.get('hotel_name', '')}"]
+        if hotel_rank:
+            golden_summary_parts.append(f"Hạng: {hotel_rank} sao")
+        if hotel_price and hotel_price > 0:
+            golden_summary_parts.append(f"Giá TB: {hotel_price:,.0f} VND")
+        if area_name:
+            golden_summary_parts.append(f"Vị trí: {area_name}")
+        if price_category:
+            golden_summary_parts.append(f"Phân khúc: {price_category}")
+        
+        golden_summary = "\n".join([f"- {part}" for part in golden_summary_parts])
+        
         metadata = {
             "hotel_id": hotel_data.get("hotel_id"),
             "hotel_name": hotel_data.get("hotel_name", ""),
@@ -565,6 +606,9 @@ class StructuredChunker:
             "brand_name": hotel_data.get("brand_name", ""),
             "price_category": hotel_data.get("price_category", ""),
             "normalized_name": hotel_data.get("normalized_name", ""),
+            
+            # --- QUAN TRỌNG: Thêm Golden Summary vào metadata ---
+            "hotel_info_summary": golden_summary,  # Thông tin cốt lõi đi kèm mọi chunk
             
             # Section-specific metadata
             "section_number": section["section_number"],

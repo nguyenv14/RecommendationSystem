@@ -239,14 +239,20 @@ class RAGService:
             if top_k is None:
                 top_k = 5  # Default k=5
             
+            # Use Qdrant grouping to ensure diverse hotels (1 chunk per hotel)
+            # This is more efficient than manual deduplication
             # Note: Embedding cache is handled inside RetrieverService.retrieve()
             # which calls EmbeddingService.embed_query() which checks cache
             documents = self.retriever_service.retrieve(
                 query=processed_query,  # Use processed query
                 collection_name=self.collection_name,
-                top_k=top_k,
-                filters=filters
+                top_k=top_k,  # Number of unique hotels to return
+                filters=filters,
+                use_grouping=True,  # Use Qdrant grouping to ensure diversity
+                group_by="hotel_id"  # Group by hotel_id to get diverse hotels
             )
+            
+            logger.info(f"Retrieved {len(documents)} documents from {len(documents)} unique hotels (using Qdrant grouping)")
             
             # Check if question is about hotel rooms and extract hotel_id from search results
             hotel_id = self._extract_hotel_id_from_documents(documents, question)
@@ -703,6 +709,113 @@ class RAGService:
             logger.error(f"Error getting stats: {e}")
             return {}
     
+    def _extract_hotel_id_from_result(self, result: Dict[str, Any]) -> Optional[int]:
+        """
+        Extract hotel_id from a single result (can be in payload or derived from id)
+        
+        Args:
+            result: Result dict with 'id' and 'payload' fields
+            
+        Returns:
+            hotel_id if found, None otherwise
+        """
+        payload = result.get('payload', {})
+        # Try to get hotel_id from payload first
+        hotel_id = payload.get('hotel_id')
+        if hotel_id is not None:
+            try:
+                return int(hotel_id)
+            except (ValueError, TypeError):
+                pass
+        
+        # If not in payload, try to parse from id (if id is chunk_id format: hotel_id * 1000000 + chunk_index)
+        result_id = result.get('id')
+        if result_id is not None:
+            try:
+                result_id_int = int(result_id)
+                # If id is very large, it might be chunk_id format
+                # Try to extract hotel_id by dividing by 1000000
+                if result_id_int > 1000000:
+                    potential_hotel_id = result_id_int // 1000000
+                    # Validate: if we multiply back and it's close, it's likely correct
+                    if potential_hotel_id * 1000000 <= result_id_int < (potential_hotel_id + 1) * 1000000:
+                        return potential_hotel_id
+                # Otherwise, id might be hotel_id directly
+                return result_id_int
+            except (ValueError, TypeError):
+                pass
+        
+        return None
+    
+    def _deduplicate_by_hotel_id(
+        self, 
+        documents: List[Dict[str, Any]], 
+        max_chunks_per_hotel: int = 2,
+        min_hotels: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Deduplicate documents by hotel_id, keeping top N chunks per hotel
+        
+        Args:
+            documents: List of document results
+            max_chunks_per_hotel: Maximum number of chunks to keep per hotel (default: 2)
+            min_hotels: Minimum number of unique hotels to aim for (default: 5)
+            
+        Returns:
+            Deduplicated list of documents with diverse hotels
+        """
+        # Group documents by hotel_id
+        hotel_docs_map = {}  # hotel_id -> list of documents (sorted by score)
+        
+        for doc in documents:
+            hotel_id = self._extract_hotel_id_from_result(doc)
+            if hotel_id is None:
+                # If we can't extract hotel_id, keep it (might be room/type_room or other type)
+                # Add to a special key
+                if 'unknown' not in hotel_docs_map:
+                    hotel_docs_map['unknown'] = []
+                hotel_docs_map['unknown'].append(doc)
+                continue
+            
+            if hotel_id not in hotel_docs_map:
+                hotel_docs_map[hotel_id] = []
+            hotel_docs_map[hotel_id].append(doc)
+        
+        # Sort documents within each hotel by score (descending)
+        for hotel_id in hotel_docs_map:
+            hotel_docs_map[hotel_id].sort(key=lambda x: x.get('score', 0), reverse=True)
+        
+        # Calculate how many chunks per hotel to keep
+        # If we have many hotels, keep fewer chunks per hotel
+        # If we have few hotels, keep more chunks per hotel
+        num_hotels = len([k for k in hotel_docs_map.keys() if k != 'unknown'])
+        
+        if num_hotels >= min_hotels:
+            # We have enough hotels, keep max_chunks_per_hotel chunks per hotel
+            chunks_per_hotel = max_chunks_per_hotel
+        else:
+            # We have fewer hotels, keep more chunks per hotel to reach min_hotels
+            # But still limit to avoid too many chunks from same hotel
+            chunks_per_hotel = min(max_chunks_per_hotel * 2, 5)
+        
+        # Collect top chunks from each hotel
+        deduplicated = []
+        for hotel_id, hotel_docs in hotel_docs_map.items():
+            if hotel_id == 'unknown':
+                # Keep all unknown documents (rooms, type_rooms, etc.)
+                deduplicated.extend(hotel_docs)
+            else:
+                # Keep top N chunks for this hotel
+                deduplicated.extend(hotel_docs[:chunks_per_hotel])
+        
+        # Sort all by score to maintain relevance order
+        deduplicated.sort(key=lambda x: x.get('score', 0), reverse=True)
+        
+        logger.info(f"Deduplication: {len(documents)} chunks -> {len(deduplicated)} chunks "
+                   f"from {num_hotels} unique hotels (keeping {chunks_per_hotel} chunks per hotel)")
+        
+        return deduplicated
+    
     def _extract_hotel_id_from_documents(self, documents: List[Dict[str, Any]], question: str) -> Optional[int]:
         """
         Extract hotel_id from search results or question
@@ -717,25 +830,10 @@ class RAGService:
         try:
             # First, check if any document in results is a hotel
             for doc in documents:
-                payload = doc.get('payload', {})
-                document_type = payload.get('document_type')
-                
-                if document_type == 'hotel':
-                    hotel_id = payload.get('hotel_id')
-                    if hotel_id:
-                        try:
-                            return int(hotel_id)
-                        except (ValueError, TypeError):
-                            continue
-                
-                # Also check if it's a room document (has hotel_id)
-                elif document_type == 'room':
-                    hotel_id = payload.get('hotel_id')
-                    if hotel_id:
-                        try:
-                            return int(hotel_id)
-                        except (ValueError, TypeError):
-                            continue
+                # Use the new helper function to extract hotel_id
+                hotel_id = self._extract_hotel_id_from_result(doc)
+                if hotel_id is not None:
+                    return hotel_id
             
             # If no hotel found in results, check question patterns
             # Look for patterns like "KS X", "khách sạn X", "hotel X"

@@ -63,18 +63,22 @@ class RetrieverService:
         top_k: Optional[int] = None,
         filters: Optional[Dict[str, Any]] = None,
         score_threshold: Optional[float] = None,
-        use_hybrid: Optional[bool] = None
+        use_hybrid: Optional[bool] = None,
+        use_grouping: bool = False,
+        group_by: str = "hotel_id"
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve similar documents by query text (supports hybrid search)
+        Retrieve similar documents by query text (supports hybrid search and grouping)
         
         Args:
             query: Query text
             collection_name: Collection to search
-            top_k: Number of results
+            top_k: Number of results (or number of groups if use_grouping=True)
             filters: Filters dict (e.g. {"document_type": "hotel"})
             score_threshold: Minimum similarity score
             use_hybrid: Override hybrid search setting (None = use default)
+            use_grouping: Use Qdrant grouping to ensure diverse results (default: False)
+            group_by: Field name to group by when use_grouping=True (default: "hotel_id")
             
         Returns:
             List of retrieved documents with scores
@@ -116,37 +120,62 @@ class RetrieverService:
                         logger.warning(f"Failed to generate sparse vector, falling back to semantic only: {e}")
                         use_hybrid_search = False
             
-            # Search
-            if use_hybrid_search and query_sparse_vector:
-                logger.debug(f"Using hybrid search (semantic + keyword) for query: '{query[:50]}...'")
-                results = self.vectorstore_service.search(
+            # Search with grouping if requested
+            if use_grouping:
+                logger.debug(f"Using grouped search (group_by={group_by}) for query: '{query[:50]}...'")
+                grouped_results = self.vectorstore_service.search_groups(
                     query_vector=query_vector,
                     collection_name=collection_name,
+                    group_by=group_by,
                     limit=top_k,
+                    group_size=1,  # Only need best match per group
                     filters=qdrant_filter,
                     score_threshold=score_threshold,
-                    query_sparse_vector=query_sparse_vector,
-                    prefetch_limit=top_k * 2  # Get more candidates for merging
+                    query_sparse_vector=query_sparse_vector if (use_hybrid_search and query_sparse_vector) else None
                 )
+                
+                # Format grouped results
+                documents = []
+                for result in grouped_results:
+                    doc = {
+                        "id": result.get("id"),
+                        "score": result.get("score", 0),
+                        "payload": result.get("payload", {}),
+                        "group_id": result.get("group_id")  # The hotel_id or other group value
+                    }
+                    documents.append(doc)
             else:
-                logger.debug(f"Using semantic search only for query: '{query[:50]}...'")
-                results = self.vectorstore_service.search(
-                    query_vector=query_vector,
-                    collection_name=collection_name,
-                    limit=top_k,
-                    filters=qdrant_filter,
-                    score_threshold=score_threshold
-                )
-            
-            # Format results
-            documents = []
-            for result in results:
-                doc = {
-                    "id": result.id,
-                    "score": result.score,
-                    "payload": result.payload
-                }
-                documents.append(doc)
+                # Regular search without grouping
+                if use_hybrid_search and query_sparse_vector:
+                    logger.debug(f"Using hybrid search (semantic + keyword) for query: '{query[:50]}...'")
+                    results = self.vectorstore_service.search(
+                        query_vector=query_vector,
+                        collection_name=collection_name,
+                        limit=top_k,
+                        filters=qdrant_filter,
+                        score_threshold=score_threshold,
+                        query_sparse_vector=query_sparse_vector,
+                        prefetch_limit=top_k * 2  # Get more candidates for merging
+                    )
+                else:
+                    logger.debug(f"Using semantic search only for query: '{query[:50]}...'")
+                    results = self.vectorstore_service.search(
+                        query_vector=query_vector,
+                        collection_name=collection_name,
+                        limit=top_k,
+                        filters=qdrant_filter,
+                        score_threshold=score_threshold
+                    )
+                
+                # Format results
+                documents = []
+                for result in results:
+                    doc = {
+                        "id": result.id,
+                        "score": result.score,
+                        "payload": result.payload
+                    }
+                    documents.append(doc)
             
             search_type = "hybrid" if use_hybrid_search and query_sparse_vector else "semantic"
             logger.info(f"Retrieved {len(documents)} documents using {search_type} search for query: '{query[:50]}...'")

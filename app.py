@@ -21,6 +21,7 @@ if _original_hf_offline == '1':
 import sys
 import socket
 from pathlib import Path
+from typing import Optional
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 
@@ -457,6 +458,45 @@ def recommend_by_query():
         )
 
 
+def extract_hotel_id(result: dict) -> Optional[int]:
+    """
+    Extract hotel_id from result (can be in payload or derived from id)
+    
+    Args:
+        result: Result dict with 'id' and 'payload' fields
+        
+    Returns:
+        hotel_id if found, None otherwise
+    """
+    payload = result.get('payload', {})
+    # Try to get hotel_id from payload first
+    hotel_id = payload.get('hotel_id')
+    if hotel_id is not None:
+        try:
+            return int(hotel_id)
+        except (ValueError, TypeError):
+            pass
+    
+    # If not in payload, try to parse from id (if id is chunk_id format: hotel_id * 1000000 + chunk_index)
+    result_id = result.get('id')
+    if result_id is not None:
+        try:
+            result_id_int = int(result_id)
+            # If id is very large, it might be chunk_id format
+            # Try to extract hotel_id by dividing by 1000000
+            if result_id_int > 1000000:
+                potential_hotel_id = result_id_int // 1000000
+                # Validate: if we multiply back and it's close, it's likely correct
+                if potential_hotel_id * 1000000 <= result_id_int < (potential_hotel_id + 1) * 1000000:
+                    return potential_hotel_id
+            # Otherwise, id might be hotel_id directly
+            return result_id_int
+        except (ValueError, TypeError):
+            pass
+    
+    return None
+
+
 def apply_filters(results: list, filters: dict) -> list:
     """Apply filters to search results"""
     filtered = results
@@ -576,16 +616,19 @@ def semantic_search_hotels():
         
         logger.info(f"Final filters: {filters}")
         
-        # Step 2: Semantic search (get more results for filtering)
-        # Use retriever directly to get raw results with scores
+        # Step 2: Semantic search with Qdrant grouping to ensure diverse hotels
+        # Use Qdrant grouping to automatically get 1 chunk per hotel (best match)
+        # This is more efficient than manual deduplication
         results = recommender_service.retriever.retrieve(
             query=query,
             collection_name=settings.REC_COLLECTION_HOTELS,
-            top_k=top_k * 3,  # Get more results for filtering
-            filters=None  # Don't use Qdrant filters, we'll filter manually
+            top_k=top_k * 3,  # Get more groups for filtering
+            filters=None,  # Don't use Qdrant filters, we'll filter manually
+            use_grouping=True,  # Use Qdrant grouping to ensure diversity
+            group_by="hotel_id"  # Group by hotel_id to get diverse hotels
         )
         
-        logger.info(f"Semantic search returned {len(results)} results")
+        logger.info(f"Semantic search with grouping returned {len(results)} unique hotels")
         
         # Step 3: Apply filters
         filtered_results = apply_filters(results, filters)
@@ -598,7 +641,7 @@ def semantic_search_hotels():
             # Try without price filter first
             relaxed_filters = {k: v for k, v in filters.items() if k != "max_price"}
             if relaxed_filters:
-                filtered_results = apply_filters(results, relaxed_filters)
+                filtered_results = apply_filters(deduplicated_results, relaxed_filters)
             
             # If still no results, use original results without any filters
             if len(filtered_results) == 0:
@@ -612,7 +655,7 @@ def semantic_search_hotels():
             top_k=top_k
         )
         
-        logger.info(f"Final ranked results: {len(ranked_results)}")
+        logger.info(f"Final ranked results: {len(ranked_results)} unique hotels")
         
         # Format results for frontend (fetch full hotel data from database)
         formatted_results = []
@@ -621,8 +664,12 @@ def semantic_search_hotels():
                 from sqlalchemy import create_engine, text
                 import pandas as pd
                 
-                # Get hotel IDs from results
-                hotel_ids = [str(result.get('id')) for result in ranked_results if result.get('id')]
+                # Get hotel IDs from results (extract hotel_id properly)
+                hotel_ids = []
+                for result in ranked_results:
+                    hotel_id = extract_hotel_id(result)
+                    if hotel_id is not None:
+                        hotel_ids.append(str(hotel_id))
                 
                 if hotel_ids:
                     # Fetch full hotel data from database
@@ -665,7 +712,11 @@ def semantic_search_hotels():
                     
                     # Format results maintaining order from ranked_results
                     for result in ranked_results:
-                        hotel_id = result.get('id')
+                        hotel_id = extract_hotel_id(result)
+                        if hotel_id is None:
+                            logger.warning(f"Could not extract hotel_id from result, skipping")
+                            continue
+                        
                         if hotel_id in hotels_map:
                             hotel = hotels_map[hotel_id]
                             # Format hotel data for frontend
@@ -692,10 +743,17 @@ def semantic_search_hotels():
                             }
                             formatted_results.append(hotel_data)
                         else:
-                            # Fallback if hotel not found in DB
+                            # Fallback if hotel not found in DB (use payload data)
                             payload = result.get('payload', {})
+                            # Try to get hotel_id from payload as fallback
+                            fallback_hotel_id = payload.get('hotel_id', hotel_id)
+                            try:
+                                fallback_hotel_id = int(fallback_hotel_id)
+                            except (ValueError, TypeError):
+                                fallback_hotel_id = hotel_id
+                            
                             hotel_data = {
-                                'hotel_id': hotel_id,
+                                'hotel_id': fallback_hotel_id,
                                 'hotel_name': payload.get('hotel_name', f'Hotel {hotel_id}'),
                                 'hotel_desc': payload.get('hotel_desc', ''),
                                 'hotel_rank': payload.get('hotel_rank', 0),
@@ -716,9 +774,14 @@ def semantic_search_hotels():
                 logger.error(f"Error fetching full hotel data: {e}")
                 # Fallback to payload data only
                 for result in ranked_results:
+                    hotel_id = extract_hotel_id(result)
+                    if hotel_id is None:
+                        logger.warning(f"Could not extract hotel_id from result, skipping")
+                        continue
+                    
                     payload = result.get('payload', {})
                     hotel_data = {
-                        'hotel_id': result.get('id'),
+                        'hotel_id': hotel_id,
                         'hotel_name': payload.get('hotel_name', f'Hotel {result.get("id")}'),
                         'hotel_desc': payload.get('hotel_desc', ''),
                         'hotel_rank': payload.get('hotel_rank', 0),

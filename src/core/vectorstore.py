@@ -257,6 +257,165 @@ class VectorStoreService:
             logger.error(traceback.format_exc())
             return []
     
+    def search_groups(
+        self,
+        query_vector: List[float],
+        collection_name: Optional[str] = None,
+        group_by: str = "hotel_id",
+        limit: int = 10,
+        group_size: int = 1,
+        filters: Optional[Filter] = None,
+        score_threshold: Optional[float] = None,
+        query_sparse_vector: Optional[Dict[str, Any]] = None,
+        with_payload: bool = True,
+        with_vectors: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Search with grouping by a field (e.g., hotel_id)
+        This ensures diverse results - each group (hotel) only appears once
+        
+        Args:
+            query_vector: Query vector
+            collection_name: Collection to search
+            group_by: Field name to group by (e.g., "hotel_id")
+            limit: Number of groups to return
+            group_size: Number of results per group (default: 1 - best match only)
+            filters: Optional filters
+            score_threshold: Minimum score
+            query_sparse_vector: Optional sparse vector for hybrid search
+            with_payload: Include payload in results
+            with_vectors: Include vectors in results
+            
+        Returns:
+            List of groups, each containing the best matches for that group
+        """
+        if collection_name is None:
+            collection_name = self.default_collection
+        
+        if collection_name is None:
+            raise ValueError("No collection specified and no default collection set")
+        
+        try:
+            # Check if Qdrant client supports search_groups (requires Qdrant 1.7+)
+            if not hasattr(self.client, 'search_groups'):
+                logger.warning("Qdrant client does not support search_groups, falling back to regular search")
+                # Fallback to regular search
+                results = self.search(
+                    query_vector=query_vector,
+                    collection_name=collection_name,
+                    limit=limit * group_size,  # Get more to manually group
+                    filters=filters,
+                    score_threshold=score_threshold,
+                    query_sparse_vector=query_sparse_vector,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors
+                )
+                # Manual grouping fallback
+                return self._manual_group_results(results, group_by, limit, group_size)
+            
+            # Use Qdrant native grouping
+            if query_sparse_vector:
+                # Hybrid search with grouping
+                from qdrant_client.models import SparseVector
+                sparse_vec = SparseVector(**query_sparse_vector)
+                
+                groups = self.client.search_groups(
+                    collection_name=collection_name,
+                    query_vector=query_vector,
+                    query_sparse_vector=sparse_vec,
+                    group_by=group_by,
+                    limit=limit,
+                    group_size=group_size,
+                    query_filter=filters,
+                    score_threshold=score_threshold,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors
+                )
+            else:
+                # Dense vector search with grouping
+                groups = self.client.search_groups(
+                    collection_name=collection_name,
+                    query_vector=query_vector,
+                    group_by=group_by,
+                    limit=limit,
+                    group_size=group_size,
+                    query_filter=filters,
+                    score_threshold=score_threshold,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors
+                )
+            
+            # Format results
+            formatted_groups = []
+            for group in groups.groups:
+                if group.hits:
+                    # Get best hit from this group
+                    best_hit = group.hits[0]
+                    formatted_groups.append({
+                        "id": best_hit.id,
+                        "score": best_hit.score,
+                        "payload": best_hit.payload if with_payload else {},
+                        "group_id": group.id,  # The value of group_by field (e.g., hotel_id)
+                        "group_size": len(group.hits)
+                    })
+            
+            logger.info(f"Search groups returned {len(formatted_groups)} groups from {collection_name} (grouped by {group_by})")
+            return formatted_groups
+            
+        except Exception as e:
+            logger.error(f"Error in search_groups for {collection_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fallback to regular search
+            logger.warning("Falling back to regular search due to grouping error")
+            results = self.search(
+                query_vector=query_vector,
+                collection_name=collection_name,
+                limit=limit * group_size,
+                filters=filters,
+                score_threshold=score_threshold,
+                query_sparse_vector=query_sparse_vector,
+                with_payload=with_payload,
+                with_vectors=with_vectors
+            )
+            return self._manual_group_results(results, group_by, limit, group_size)
+    
+    def _manual_group_results(
+        self,
+        results: List[ScoredPoint],
+        group_by: str,
+        limit: int,
+        group_size: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Manual grouping fallback when Qdrant grouping is not available
+        """
+        groups_map = {}  # group_id -> list of results
+        
+        for result in results:
+            group_id = result.payload.get(group_by) if result.payload else None
+            if group_id is None:
+                continue
+            
+            if group_id not in groups_map:
+                groups_map[group_id] = []
+            groups_map[group_id].append(result)
+        
+        # Sort each group by score and take top group_size
+        formatted_groups = []
+        for group_id, group_results in list(groups_map.items())[:limit]:
+            group_results.sort(key=lambda x: x.score, reverse=True)
+            best_hit = group_results[0]
+            formatted_groups.append({
+                "id": best_hit.id,
+                "score": best_hit.score,
+                "payload": best_hit.payload or {},
+                "group_id": group_id,
+                "group_size": len(group_results)
+            })
+        
+        return formatted_groups
+    
     def search_by_text(
         self,
         query_text: str,
