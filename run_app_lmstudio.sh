@@ -359,7 +359,7 @@ echo "==========================================${NC}"
 echo -e "${YELLOW}💡 Checking collections...${NC}"
 echo ""
 
-# python setup_collections.py
+python setup_collections.py
 
 echo ""
 echo -e "${YELLOW}💡 Tip: Collections có data rồi sẽ không tải lại${NC}"

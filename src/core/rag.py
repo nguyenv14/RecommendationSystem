@@ -17,8 +17,8 @@ from ..config import get_settings
 
 # Import QueryRouter and SQLQueryGenerator
 try:
-    from rag.core.query_router import QueryRouter
-    from rag.core.sql_query_generator import SQLQueryGenerator
+    from .query_router import QueryRouter
+    from .sql_query_generator import SQLQueryGenerator
 except ImportError:
     try:
         import sys
@@ -32,21 +32,33 @@ except ImportError:
         QueryRouter = None
         SQLQueryGenerator = None
 
-# Import DatabaseConnector for fallback room/type_room retrieval
-try:
-    from rag.data.connector import DatabaseConnector
-    from rag.data.normalizer import HotelDataNormalizer
-except ImportError:
-    try:
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'rag'))
-        from data.connector import DatabaseConnector
-        from data.normalizer import HotelDataNormalizer
-    except ImportError:
-        logger.warning("Could not import DatabaseConnector or HotelDataNormalizer for room retrieval")
-        DatabaseConnector = None
-        HotelDataNormalizer = None
+# Lazy import DatabaseConnector to avoid circular import
+# DatabaseConnector will be imported when needed, not at module level
+DatabaseConnector = None
+HotelDataNormalizer = None
+
+def _get_database_connector():
+    """Lazy import DatabaseConnector"""
+    global DatabaseConnector, HotelDataNormalizer
+    if DatabaseConnector is None:
+        try:
+            from src.data.connector import DatabaseConnector as DC
+            from src.data.normalizer import HotelDataNormalizer as HDN
+            DatabaseConnector = DC
+            HotelDataNormalizer = HDN
+        except ImportError:
+            try:
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'rag'))
+                from data.connector import DatabaseConnector as DC
+                from data.normalizer import HotelDataNormalizer as HDN
+                DatabaseConnector = DC
+                HotelDataNormalizer = HDN
+            except ImportError:
+                logger = get_logger(__name__)
+                logger.warning("Could not import DatabaseConnector or HotelDataNormalizer for room retrieval")
+    return DatabaseConnector, HotelDataNormalizer
 
 logger = get_logger(__name__)
 
@@ -391,9 +403,10 @@ class RAGService:
         # Initialize database connector if needed
         if self.db_connector is None:
             try:
-                from rag.data.connector import DatabaseConnector
-                self.db_connector = DatabaseConnector()
-                if not self.db_connector.test_connection():
+                DC, _ = _get_database_connector()
+                if DC is not None:
+                    self.db_connector = DC()
+                if self.db_connector is not None and not self.db_connector.test_connection():
                     logger.error("❌ Database connection failed")
                     return {
                         "question": question,
@@ -638,6 +651,45 @@ class RAGService:
                 text_field = meta['text_field']
                 metadata_fields = meta['metadata_fields']
                 
+                # Convert doc_id to integer if it's a string (for Qdrant compatibility)
+                # Qdrant only accepts integer or UUID, not string IDs
+                if isinstance(doc_id, str):
+                    # Try to extract numeric ID from string patterns
+                    if doc_id.startswith('room_'):
+                        # Format: room_{room_id}_{type_room_id}
+                        parts = doc_id.split('_')
+                        if len(parts) >= 3:
+                            try:
+                                room_id = int(parts[1])
+                                type_id = int(parts[2]) if len(parts) > 2 else 0
+                                doc_id = 2000000 + (room_id * 1000 + type_id)  # Offset to avoid collision
+                            except ValueError:
+                                # Fallback: use hash
+                                import hashlib
+                                doc_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:8], 16)
+                    elif doc_id.startswith('type_room_'):
+                        # Format: type_room_{type_room_id}
+                        parts = doc_id.split('_')
+                        if len(parts) >= 3:
+                            try:
+                                type_room_id = int(parts[2])
+                                doc_id = 3000000 + type_room_id  # Offset to avoid collision
+                            except ValueError:
+                                import hashlib
+                                doc_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:8], 16)
+                    else:
+                        # Other string IDs - use hash
+                        import hashlib
+                        doc_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:8], 16)
+                
+                # Ensure doc_id is integer
+                try:
+                    doc_id = int(doc_id)
+                except (ValueError, TypeError):
+                    # Last resort: use hash
+                    import hashlib
+                    doc_id = int(hashlib.md5(str(doc_id).encode()).hexdigest()[:8], 16)
+                
                 # Prepare payload
                 payload = {text_field: texts[i]}
                 
@@ -650,10 +702,17 @@ class RAGService:
                     # Add all fields
                     payload.update(doc)
                 
-                # Create point
+                # Remove 'id' from payload if present (it's used as point ID)
+                if 'id' in payload:
+                    del payload['id']
+                
+                # Convert vector to list if needed (dense vectors only)
+                vector_list = vector.tolist() if hasattr(vector, 'tolist') else list(vector)
+                
+                # Create point with single dense vector
                 point = PointStruct(
-                    id=doc_id,
-                    vector=vector,
+                    id=doc_id,  # Integer ID for Qdrant
+                    vector=vector_list,
                     payload=payload
                 )
                 points.append(point)
@@ -889,14 +948,19 @@ class RAGService:
             )
             
             # If no rooms found in vector store, try database fallback
-            if not rooms and DatabaseConnector is not None and HotelDataNormalizer is not None:
+            DC, HDN = _get_database_connector()
+            if not rooms and DC is not None and HDN is not None:
                 logger.info(f"No rooms found in vector store for hotel_id={hotel_id}, trying database fallback...")
                 try:
                     # Initialize connector and normalizer if needed
                     if self.room_db_connector is None:
-                        self.room_db_connector = DatabaseConnector()
+                        DC, HDN = _get_database_connector()
+                        if DC is not None:
+                            self.room_db_connector = DC()
                     if self.room_normalizer is None:
-                        self.room_normalizer = HotelDataNormalizer()
+                        DC, HDN = _get_database_connector()
+                        if HDN is not None:
+                            self.room_normalizer = HDN()
                     
                     # Get rooms from database
                     rooms_df = self.room_db_connector.get_rooms_enriched(hotel_ids=[hotel_id], limit=top_k)
@@ -974,14 +1038,17 @@ class RAGService:
                         pass
             
             # If no type_rooms found in vector store, try database fallback
-            if not matching_type_rooms and DatabaseConnector is not None and HotelDataNormalizer is not None:
+            DC, HDN = _get_database_connector()
+            if not matching_type_rooms and DC is not None and HDN is not None:
                 logger.info(f"No type_rooms found in vector store for hotel_id={hotel_id}, trying database fallback...")
                 try:
                     # Initialize connector and normalizer if needed
                     if self.room_db_connector is None:
-                        self.room_db_connector = DatabaseConnector()
+                        if DC is not None:
+                            self.room_db_connector = DC()
                     if self.room_normalizer is None:
-                        self.room_normalizer = HotelDataNormalizer()
+                        if HDN is not None:
+                            self.room_normalizer = HDN()
                     
                     # Get type_rooms from database
                     type_rooms_df = self.room_db_connector.get_type_rooms_enriched(hotel_ids=[hotel_id], limit=top_k)

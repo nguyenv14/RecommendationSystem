@@ -10,9 +10,9 @@ import sys
 import logging
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from simple_rag_system import SimpleRAGSystem
+from src.core import SimpleRAGSystem
 
 logging.basicConfig(
     level=logging.INFO,

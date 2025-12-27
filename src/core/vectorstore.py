@@ -45,18 +45,16 @@ class VectorStoreService:
         collection_name: str,
         vector_size: int,
         distance: Distance = Distance.COSINE,
-        recreate: bool = False,
-        enable_sparse: bool = True
+        recreate: bool = False
     ) -> bool:
         """
-        Create or recreate collection with optional sparse vectors support
+        Create or recreate collection with dense vectors only
         
         Args:
             collection_name: Collection name
             vector_size: Vector dimension
             distance: Distance metric
             recreate: Force recreate if exists
-            enable_sparse: Enable sparse vectors (BM25) for hybrid search
             
         Returns:
             True if successful
@@ -72,24 +70,12 @@ class VectorStoreService:
                     logger.info(f"Collection already exists: {collection_name}")
                     return True
             
-            # Build vectors config
-            if enable_sparse:
-                logger.info(f"Creating collection with hybrid search: {collection_name} (dense={vector_size}, sparse=BM25)")
-                self.client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config={
-                        "dense": VectorParams(size=vector_size, distance=distance)
-                    },
-                    sparse_vectors_config={
-                        "sparse": SparseVectorParams()  # BM25 sparse vector
-                    }
-                )
-            else:
-                logger.info(f"Creating collection: {collection_name} (size={vector_size})")
-                self.client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(size=vector_size, distance=distance)
-                )
+            # Create collection with dense vectors only
+            logger.info(f"Creating collection: {collection_name} (size={vector_size})")
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=vector_size, distance=distance)
+            )
             
             logger.info(f"✅ Collection created: {collection_name}")
             return True

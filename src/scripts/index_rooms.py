@@ -10,12 +10,10 @@ import sys
 import logging
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from simple_rag_system import SimpleRAGSystem
-from data.processor import DataProcessor
-from data.connector import DatabaseConnector
-from data.normalizer import HotelDataNormalizer
+from src.core import SimpleRAGSystem
+from src.data import DataProcessor, DatabaseConnector, HotelDataNormalizer
 
 logging.basicConfig(
     level=logging.INFO,
