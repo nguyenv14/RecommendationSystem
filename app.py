@@ -641,7 +641,7 @@ def semantic_search_hotels():
             # Try without price filter first
             relaxed_filters = {k: v for k, v in filters.items() if k != "max_price"}
             if relaxed_filters:
-                filtered_results = apply_filters(deduplicated_results, relaxed_filters)
+                filtered_results = apply_filters(results, relaxed_filters)
             
             # If still no results, use original results without any filters
             if len(filtered_results) == 0:
@@ -1084,6 +1084,81 @@ def index_rag_type_rooms():
         )
 
 
+# ==================== Document Parsing Endpoints ====================
+
+@app.route('/api/documents/parse-file', methods=['POST'])
+def parse_file():
+    """
+    Parse file (PDF/DOC/DOCX) and chunk into Qdrant
+    
+    Request body:
+    {
+        "file_url": "http://example.com/file.pdf",
+        "file_name": "policy.pdf",
+        "collection_name": "policy_documents",  # Optional, default: "policy_documents"
+        "chunk_size": 1000,  # Optional
+        "chunk_overlap": 200  # Optional
+    }
+    """
+    try:
+        data = request.json
+        if not data or 'file_url' not in data:
+            return ApiResponse.error(
+                message='Missing required field: "file_url"',
+                code=400
+            )
+        
+        file_url = data['file_url']
+        file_name = data.get('file_name', 'document')
+        collection_name = data.get('collection_name', 'policy_documents')
+        chunk_size = data.get('chunk_size', 1000)
+        chunk_overlap = data.get('chunk_overlap', 200)
+        
+        logger.info(f"📄 Parsing file: {file_name} from {file_url}")
+        
+        # Use DocumentService from src/data
+        from src.data.document_parser import DocumentService
+        
+        document_service = DocumentService(collection_name=collection_name)
+        
+        # Parse and index document
+        result = document_service.parse_and_index(
+            file_url=file_url,
+            file_name=file_name,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+        
+        return ApiResponse.success(
+            data={
+                'file_name': result['file_name'],
+                'chunks_count': result['chunks_count'],
+                'collection_name': result['collection_name'],
+                'text_length': result['text_length']
+            },
+            message=f'Successfully parsed and indexed {result["chunks_count"]} chunks from {result["file_name"]}'
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation error parsing file: {e}")
+        return ApiResponse.error(
+            message=f'Validation error: {str(e)}',
+            code=400
+        )
+    except ImportError as e:
+        logger.error(f"Import error parsing file: {e}")
+        return ApiResponse.error(
+            message=f'Missing required library: {str(e)}',
+            code=500
+        )
+    except Exception as e:
+        logger.error(f"Error parsing file: {e}", exc_info=True)
+        return ApiResponse.error(
+            message=f'Error parsing file: {str(e)}',
+            code=500
+        )
+
+
 if __name__ == '__main__':
     logger.info("="*70)
     logger.info("🏨 Unified Hotel Recommendation & RAG System v3.0")
@@ -1138,6 +1213,7 @@ if __name__ == '__main__':
     logger.info(f"   Index Recommendation: POST http://localhost:{port}/api/indexing/recommendation")
     logger.info(f"   Index RAG Rooms: POST   http://localhost:{port}/api/indexing/rag/rooms")
     logger.info(f"   Index RAG Type Rooms: POST http://localhost:{port}/api/indexing/rag/type-rooms")
+    logger.info(f"   Parse Document: POST    http://localhost:{port}/api/documents/parse-file")
     logger.info("")
     logger.info(f"🌐 Open http://localhost:{port} in your browser")
     logger.info("="*70)

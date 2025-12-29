@@ -17,8 +17,8 @@ from ..config import get_settings
 
 # Import QueryRouter and SQLQueryGenerator
 try:
-    from rag.core.query_router import QueryRouter
-    from rag.core.sql_query_generator import SQLQueryGenerator
+    from .query_router import QueryRouter
+    from .sql_query_generator import SQLQueryGenerator
 except ImportError:
     try:
         import sys
@@ -32,21 +32,33 @@ except ImportError:
         QueryRouter = None
         SQLQueryGenerator = None
 
-# Import DatabaseConnector for fallback room/type_room retrieval
-try:
-    from rag.data.connector import DatabaseConnector
-    from rag.data.normalizer import HotelDataNormalizer
-except ImportError:
-    try:
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'rag'))
-        from data.connector import DatabaseConnector
-        from data.normalizer import HotelDataNormalizer
-    except ImportError:
-        logger.warning("Could not import DatabaseConnector or HotelDataNormalizer for room retrieval")
-        DatabaseConnector = None
-        HotelDataNormalizer = None
+# Lazy import DatabaseConnector to avoid circular import
+# DatabaseConnector will be imported when needed, not at module level
+DatabaseConnector = None
+HotelDataNormalizer = None
+
+def _get_database_connector():
+    """Lazy import DatabaseConnector"""
+    global DatabaseConnector, HotelDataNormalizer
+    if DatabaseConnector is None:
+        try:
+            from src.data.connector import DatabaseConnector as DC
+            from src.data.normalizer import HotelDataNormalizer as HDN
+            DatabaseConnector = DC
+            HotelDataNormalizer = HDN
+        except ImportError:
+            try:
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'rag'))
+                from data.connector import DatabaseConnector as DC
+                from data.normalizer import HotelDataNormalizer as HDN
+                DatabaseConnector = DC
+                HotelDataNormalizer = HDN
+            except ImportError:
+                logger = get_logger(__name__)
+                logger.warning("Could not import DatabaseConnector or HotelDataNormalizer for room retrieval")
+    return DatabaseConnector, HotelDataNormalizer
 
 logger = get_logger(__name__)
 
@@ -239,42 +251,63 @@ class RAGService:
             if top_k is None:
                 top_k = 5  # Default k=5
             
-            # Use Qdrant grouping to ensure diverse hotels (1 chunk per hotel)
-            # This is more efficient than manual deduplication
-            # Note: Embedding cache is handled inside RetrieverService.retrieve()
-            # which calls EmbeddingService.embed_query() which checks cache
-            documents = self.retriever_service.retrieve(
-                query=processed_query,  # Use processed query
-                collection_name=self.collection_name,
-                top_k=top_k,  # Number of unique hotels to return
-                filters=filters,
-                use_grouping=True,  # Use Qdrant grouping to ensure diversity
-                group_by="hotel_id"  # Group by hotel_id to get diverse hotels
-            )
+            # Step 3: Search BOTH collections in parallel to compare scores
+            # Score-based routing: Chọn collection có average score cao hơn
+            hotel_documents = []
+            policy_documents = []
+            hotel_avg_score = 0.0
+            policy_avg_score = 0.0
             
-            logger.info(f"Retrieved {len(documents)} documents from {len(documents)} unique hotels (using Qdrant grouping)")
+            # Search hotels_rag collection
+            try:
+                hotel_documents = self.retriever_service.retrieve(
+                    query=processed_query,
+                    collection_name=self.collection_name,  # hotels_rag
+                    top_k=top_k,
+                    filters=filters,
+                    use_grouping=True,
+                    group_by="hotel_id"
+                )
+                if hotel_documents:
+                    hotel_avg_score = sum(d.get('score', 0.0) for d in hotel_documents) / len(hotel_documents)
+                logger.info(f"🏨 hotels_rag: {len(hotel_documents)} docs, avg_score={hotel_avg_score:.4f}")
+            except Exception as e:
+                logger.warning(f"Error searching hotels_rag: {e}")
             
-            # Check if question is about hotel rooms and extract hotel_id from search results
-            hotel_id = self._extract_hotel_id_from_documents(documents, question)
-            hotel_rooms_docs = []
-            hotel_type_rooms_docs = []
+            # Search policy_documents collection (if exists)
+            target_collection = 'hotels_rag'  # Default
+            target_documents = hotel_documents
+            try:
+                if self.vectorstore_service.collection_exists('policy_documents'):
+                    policy_documents = self.retriever_service.retrieve(
+                        query=processed_query,
+                        collection_name='policy_documents',
+                        top_k=top_k,
+                        filters=None,
+                        use_grouping=False,
+                        group_by=None
+                    )
+                    if policy_documents:
+                        policy_avg_score = sum(d.get('score', 0.0) for d in policy_documents) / len(policy_documents)
+                    logger.info(f"📋 policy_documents: {len(policy_documents)} docs, avg_score={policy_avg_score:.4f}")
+                    
+                    # Compare scores and choose collection with higher average score
+                    # Only choose policy if it has documents AND higher score (with threshold)
+                    score_threshold = 0.05  # Policy needs to be at least 0.05 better
+                    if policy_documents and policy_avg_score > hotel_avg_score + score_threshold:
+                        target_collection = 'policy_documents'
+                        target_documents = policy_documents
+                        logger.info(f"✅ Routing to policy_documents (score: {policy_avg_score:.4f} > {hotel_avg_score:.4f})")
+                    else:
+                        logger.info(f"✅ Routing to hotels_rag (score: {hotel_avg_score:.4f} >= {policy_avg_score:.4f})")
+                else:
+                    logger.info("policy_documents collection not found, using hotels_rag only")
+            except Exception as e:
+                logger.warning(f"Error searching policy_documents: {e}")
+                # Fallback to hotels_rag
             
-            if hotel_id:
-                logger.info(f"🔍 Detected hotel_id={hotel_id} in question, fetching rooms and type_rooms...")
-                # Get rooms for this hotel
-                hotel_rooms_docs = self._get_hotel_rooms(hotel_id, top_k=20)
-                # Get type_rooms used by this hotel
-                hotel_type_rooms_docs = self._get_hotel_type_rooms(hotel_id, top_k=10)
-                logger.info(f"   Found {len(hotel_rooms_docs)} rooms and {len(hotel_type_rooms_docs)} type_rooms")
-            
-            # Merge hotel info with rooms and type_rooms if available
-            if hotel_rooms_docs or hotel_type_rooms_docs:
-                # Add rooms and type_rooms to documents for context
-                documents.extend(hotel_rooms_docs)
-                documents.extend(hotel_type_rooms_docs)
-                # Sort by score (rooms/type_rooms might not have scores, put them after)
-                documents = sorted(documents, key=lambda x: x.get('score', -1), reverse=True)
-                logger.info(f"Total documents after adding rooms: {len(documents)}")
+            # Step 4: Use ONLY the selected collection's documents
+            documents = target_documents
             
             if not documents:
                 logger.warning("No documents retrieved for question")
@@ -284,15 +317,44 @@ class RAGService:
                     "sources": [],
                     "num_sources": 0
                 }
-                # Cache negative result too (shorter TTL could be used)
                 if use_cache:
                     self.response_cache.set(question, result)
                 return result
             
-            logger.info(f"Retrieved {len(documents)} documents (expected: {top_k})")
+            # Step 5: Get collection-specific prompt template
+            collection_prompt_template = None
+            if target_collection == 'policy_documents':
+                collection_prompt_template = self.generator._get_prompt_for_collection('policy_documents')
+                # Skip hotel-specific logic (rooms, type_rooms) for policies
+                hotel_id = None
+                hotel_rooms_docs = []
+                hotel_type_rooms_docs = []
+            else:
+                # hotels_rag collection
+                collection_prompt_template = self.generator._get_prompt_for_collection('hotels_rag')
+                
+                # Extract hotel_id and get rooms/type_rooms (only for hotels)
+                hotel_id = self._extract_hotel_id_from_documents(documents, question)
+                hotel_rooms_docs = []
+                hotel_type_rooms_docs = []
+                
+                if hotel_id:
+                    logger.info(f"🔍 Detected hotel_id={hotel_id}, fetching rooms and type_rooms...")
+                    hotel_rooms_docs = self._get_hotel_rooms(hotel_id, top_k=20)
+                    hotel_type_rooms_docs = self._get_hotel_type_rooms(hotel_id, top_k=10)
+                    logger.info(f"   Found {len(hotel_rooms_docs)} rooms and {len(hotel_type_rooms_docs)} type_rooms")
+                    
+                    # Merge rooms and type_rooms with hotel documents
+                    if hotel_rooms_docs or hotel_type_rooms_docs:
+                        documents.extend(hotel_rooms_docs)
+                        documents.extend(hotel_type_rooms_docs)
+                        documents = sorted(documents, key=lambda x: x.get('score', -1), reverse=True)
             
-            # Step 5: Hybrid Search - TODO: implement
-            # For now, just use semantic search results
+            # Use collection-specific prompt if no custom prompt provided
+            if prompt_template is None:
+                prompt_template = collection_prompt_template
+            
+            logger.info(f"Retrieved {len(documents)} documents from {target_collection}")
             
             # Step 6: Re-rank Results using Cross-Encoder for better precision
             if len(documents) > 0 and self.reranker.is_available():
@@ -308,19 +370,27 @@ class RAGService:
                     logger.debug("Re-ranker not available, using original ranking")
                 # Keep original ranking if reranker not available
             
-            # Step 7-8: Build Context (với token limit) + Generate Answer
+            # Step 7-8: Build Context (với token limit) + Generate Answer with collection-specific prompt
             result = self.generator.generate_from_documents(
                 query=question,  # Use original question for generation
                 documents=documents,
-                prompt_template=prompt_template,
+                prompt_template=prompt_template,  # Use collection-specific prompt
                 max_context_tokens=4000  # Token limit
             )
+            
+            # Add routing info to result for debugging
+            result['routing'] = {
+                'collection': target_collection,
+                'hotel_avg_score': hotel_avg_score,
+                'policy_avg_score': policy_avg_score if policy_documents else None,
+                'confidence': max(hotel_avg_score, policy_avg_score) if policy_documents else hotel_avg_score
+            }
             
             # Step 9: Cache Response
             if use_cache:
                 self.response_cache.set(question, result)
             
-            logger.info(f"✅ RAG answer generated (sources: {len(result.get('sources', []))})")
+            logger.info(f"✅ RAG answer generated from {target_collection} (sources: {len(result.get('sources', []))})")
             return result
             
         except Exception as e:
@@ -391,9 +461,10 @@ class RAGService:
         # Initialize database connector if needed
         if self.db_connector is None:
             try:
-                from rag.data.connector import DatabaseConnector
-                self.db_connector = DatabaseConnector()
-                if not self.db_connector.test_connection():
+                DC, _ = _get_database_connector()
+                if DC is not None:
+                    self.db_connector = DC()
+                if self.db_connector is not None and not self.db_connector.test_connection():
                     logger.error("❌ Database connection failed")
                     return {
                         "question": question,
@@ -638,6 +709,45 @@ class RAGService:
                 text_field = meta['text_field']
                 metadata_fields = meta['metadata_fields']
                 
+                # Convert doc_id to integer if it's a string (for Qdrant compatibility)
+                # Qdrant only accepts integer or UUID, not string IDs
+                if isinstance(doc_id, str):
+                    # Try to extract numeric ID from string patterns
+                    if doc_id.startswith('room_'):
+                        # Format: room_{room_id}_{type_room_id}
+                        parts = doc_id.split('_')
+                        if len(parts) >= 3:
+                            try:
+                                room_id = int(parts[1])
+                                type_id = int(parts[2]) if len(parts) > 2 else 0
+                                doc_id = 2000000 + (room_id * 1000 + type_id)  # Offset to avoid collision
+                            except ValueError:
+                                # Fallback: use hash
+                                import hashlib
+                                doc_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:8], 16)
+                    elif doc_id.startswith('type_room_'):
+                        # Format: type_room_{type_room_id}
+                        parts = doc_id.split('_')
+                        if len(parts) >= 3:
+                            try:
+                                type_room_id = int(parts[2])
+                                doc_id = 3000000 + type_room_id  # Offset to avoid collision
+                            except ValueError:
+                                import hashlib
+                                doc_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:8], 16)
+                    else:
+                        # Other string IDs - use hash
+                        import hashlib
+                        doc_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:8], 16)
+                
+                # Ensure doc_id is integer
+                try:
+                    doc_id = int(doc_id)
+                except (ValueError, TypeError):
+                    # Last resort: use hash
+                    import hashlib
+                    doc_id = int(hashlib.md5(str(doc_id).encode()).hexdigest()[:8], 16)
+                
                 # Prepare payload
                 payload = {text_field: texts[i]}
                 
@@ -650,10 +760,17 @@ class RAGService:
                     # Add all fields
                     payload.update(doc)
                 
-                # Create point
+                # Remove 'id' from payload if present (it's used as point ID)
+                if 'id' in payload:
+                    del payload['id']
+                
+                # Convert vector to list if needed (dense vectors only)
+                vector_list = vector.tolist() if hasattr(vector, 'tolist') else list(vector)
+                
+                # Create point with single dense vector
                 point = PointStruct(
-                    id=doc_id,
-                    vector=vector,
+                    id=doc_id,  # Integer ID for Qdrant
+                    vector=vector_list,
                     payload=payload
                 )
                 points.append(point)
@@ -889,14 +1006,19 @@ class RAGService:
             )
             
             # If no rooms found in vector store, try database fallback
-            if not rooms and DatabaseConnector is not None and HotelDataNormalizer is not None:
+            DC, HDN = _get_database_connector()
+            if not rooms and DC is not None and HDN is not None:
                 logger.info(f"No rooms found in vector store for hotel_id={hotel_id}, trying database fallback...")
                 try:
                     # Initialize connector and normalizer if needed
                     if self.room_db_connector is None:
-                        self.room_db_connector = DatabaseConnector()
+                        DC, HDN = _get_database_connector()
+                        if DC is not None:
+                            self.room_db_connector = DC()
                     if self.room_normalizer is None:
-                        self.room_normalizer = HotelDataNormalizer()
+                        DC, HDN = _get_database_connector()
+                        if HDN is not None:
+                            self.room_normalizer = HDN()
                     
                     # Get rooms from database
                     rooms_df = self.room_db_connector.get_rooms_enriched(hotel_ids=[hotel_id], limit=top_k)
@@ -974,14 +1096,17 @@ class RAGService:
                         pass
             
             # If no type_rooms found in vector store, try database fallback
-            if not matching_type_rooms and DatabaseConnector is not None and HotelDataNormalizer is not None:
+            DC, HDN = _get_database_connector()
+            if not matching_type_rooms and DC is not None and HDN is not None:
                 logger.info(f"No type_rooms found in vector store for hotel_id={hotel_id}, trying database fallback...")
                 try:
                     # Initialize connector and normalizer if needed
                     if self.room_db_connector is None:
-                        self.room_db_connector = DatabaseConnector()
+                        if DC is not None:
+                            self.room_db_connector = DC()
                     if self.room_normalizer is None:
-                        self.room_normalizer = HotelDataNormalizer()
+                        if HDN is not None:
+                            self.room_normalizer = HDN()
                     
                     # Get type_rooms from database
                     type_rooms_df = self.room_db_connector.get_type_rooms_enriched(hotel_ids=[hotel_id], limit=top_k)

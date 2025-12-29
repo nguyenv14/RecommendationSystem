@@ -8,6 +8,7 @@ Tạo collections và index data từ database
 import sys
 import os
 from pathlib import Path
+import pandas as pd
 
 # Add paths
 sys.path.insert(0, str(Path(__file__).parent))
@@ -36,6 +37,7 @@ def create_collections(vectorstore: VectorStoreService):
         (Collections.RAG_HOTELS, "RAG Hotels (Chatbot)", 1024, "🏨"),
         (Collections.RAG_COUPONS, "RAG Coupons (Chatbot)", 1024, "🎟️"),
         (Collections.RECOMMENDATION_HOTELS, "Recommendation Hotels (Similar)", 1024, "🎯"),
+        (Collections.RECOMMENDATION_SEMANTIC, "Semantic Hotels (Search)", 1024, "🔍"),
     ]
     
     client = vectorstore.client
@@ -48,27 +50,15 @@ def create_collections(vectorstore: VectorStoreService):
             
             if collection_name in existing_names:
                 info = client.get_collection(collection_name)
-                logger.info(f"✅ {emoji} {description} ({collection_name}): {info.points_count} points")
-            else:
-                # Create collection with hybrid search support (dense + sparse)
-                try:
-                    from qdrant_client.models import SparseVectorParams
-                    client.create_collection(
-                        collection_name=collection_name,
-                        vectors_config={
-                            "dense": VectorParams(
-                                size=vector_size,
-                                distance=Distance.COSINE
-                            )
-                        },
-                        sparse_vectors_config={
-                            "sparse": SparseVectorParams()  # BM25 for keyword search
-                        }
-                    )
-                    logger.info(f"✅ {emoji} {description} ({collection_name}): Created with hybrid search")
-                except Exception as e:
-                    logger.warning(f"Failed to create with sparse vectors: {e}, trying dense only")
-                    # Fallback to dense only
+                # Check if collection uses named vectors (old hybrid search format)
+                vectors_config = info.config.params.vectors
+                uses_named_vectors = isinstance(vectors_config, dict)
+                
+                if uses_named_vectors:
+                    logger.warning(f"⚠️  {emoji} {description} ({collection_name}): Uses named vectors (old format)")
+                    logger.info(f"   Recreating with dense vectors only...")
+                    # Delete and recreate with dense vectors only
+                    client.delete_collection(collection_name)
                     client.create_collection(
                         collection_name=collection_name,
                         vectors_config=VectorParams(
@@ -76,7 +66,19 @@ def create_collections(vectorstore: VectorStoreService):
                             distance=Distance.COSINE
                         )
                     )
-                    logger.info(f"✅ {emoji} {description} ({collection_name}): Created (dense only)")
+                    logger.info(f"✅ {emoji} {description} ({collection_name}): Recreated with dense vectors")
+                else:
+                    logger.info(f"✅ {emoji} {description} ({collection_name}): {info.points_count} points (dense vectors)")
+            else:
+                # Create collection with dense vectors only
+                client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=Distance.COSINE
+                    )
+                )
+                logger.info(f"✅ {emoji} {description} ({collection_name}): Created (dense vectors)")
                 
         except Exception as e:
             logger.error(f"❌ Error creating {collection_name}: {e}")
@@ -85,7 +87,7 @@ def create_collections(vectorstore: VectorStoreService):
 def index_rag_data():
     """
     Index data cho RAG system (chatbot)
-    Logic từ rag/simple_rag_system.py
+    Sử dụng RAGService và IndexingService từ src/core/
     """
     logger.info("")
     logger.info("=" * 80)
@@ -93,74 +95,105 @@ def index_rag_data():
     logger.info("=" * 80)
     
     try:
-        # Import RAG system
-        sys.path.insert(0, str(Path(__file__).parent / 'rag'))
-        from simple_rag_system import SimpleRAGSystem
-        
-        # Initialize RAG system
-        logger.info("Initializing RAG system...")
+        # Initialize services
+        logger.info("Initializing services...")
         settings = get_settings()
-        rag = SimpleRAGSystem(
-            collection_name=settings.RAG_COLLECTION_HOTELS,
-            qdrant_url=settings.QDRANT_URL,
-            ollama_url=settings.OLLAMA_URL,
-            embedding_model=settings.EMBEDDING_MODEL,
-            llm_model=settings.LLM_MODEL
+        
+        from src.core import (
+            EmbeddingService, 
+            VectorStoreService, 
+            RAGService,
+            IndexingService
         )
+        from src.data.connector import DatabaseConnector
+        from src.data.normalizer import HotelDataNormalizer
+        
+        # Create services (dense vectors only, no sparse/hybrid search)
+        embedding_service = EmbeddingService(
+            provider="ollama",
+            model_name=settings.EMBEDDING_MODEL,
+            ollama_url=settings.OLLAMA_URL,
+            cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+        )
+        
+        vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
+        
+        # Create RAGService for hotels collection
+        rag_service_hotels = RAGService(
+            embedding_service=embedding_service,
+            vectorstore_service=vectorstore_service,
+            collection_name=settings.RAG_COLLECTION_HOTELS
+        )
+        
+        # Create RAGService for coupons collection
+        rag_service_coupons = RAGService(
+            embedding_service=embedding_service,
+            vectorstore_service=vectorstore_service,
+            collection_name=settings.RAG_COLLECTION_COUPONS
+        )
+        
+        # Create IndexingService for rooms/type_rooms (no sparse service)
+        indexing_service = IndexingService(
+            embedding_service=embedding_service,
+            sparse_embedding_service=None,  # No sparse vectors
+            vectorstore_service=vectorstore_service
+        )
+        
+        # Initialize data connectors
+        db_connector = DatabaseConnector()
+        normalizer = HotelDataNormalizer()
         
         # Index hotels
         logger.info("\n📊 Indexing hotels...")
-        rag.index_hotels_from_database(
-            use_chunking=True,
-            chunk_size=800,
-            recreate_collection=False,
-            batch_size=10,
-            incremental=True
-        )
+        try:
+            hotels_df = db_connector.get_hotels()
+            if hotels_df.empty:
+                logger.warning("No hotels found in database")
+            else:
+                normalized_df = normalizer.normalize_hotels(hotels_df)
+                
+                # Prepare documents
+                documents = []
+                for idx, row in normalized_df.iterrows():
+                    doc = {
+                        'id': int(row['hotel_id']),
+                        'text': row['semantic_text'],
+                        'hotel_id': int(row['hotel_id']),
+                        'hotel_name': str(row.get('hotel_name', '')),
+                        'hotel_rank': float(row.get('hotel_rank', 0)) if pd.notna(row.get('hotel_rank')) else 0,
+                        'hotel_view': int(row.get('hotel_view', 0)) if pd.notna(row.get('hotel_view')) else 0,
+                        'hotel_place': str(row.get('hotel_placedetails', '')),
+                        'hotel_price_average': float(row.get('hotel_price_average', 0)) if pd.notna(row.get('hotel_price_average')) else 0,
+                        'document_type': 'hotel'
+                    }
+                    documents.append(doc)
+                
+                # Index using RAGService
+                success = rag_service_hotels.index_documents(
+                    documents=documents,
+                    id_field='id',
+                    text_field='text',
+                    metadata_fields=['hotel_id', 'hotel_name', 'hotel_rank', 'hotel_view', 'hotel_place', 'hotel_price_average', 'document_type'],
+                    recreate_collection=False
+                )
+                
+                if success:
+                    logger.info(f"  ✅ Indexed {len(documents)} hotels")
+                else:
+                    logger.warning("  ⚠️  Failed to index hotels")
+        except Exception as e:
+            logger.error(f"  ❌ Error indexing hotels: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
         
         # Index rooms and type_rooms (cùng collection với hotels)
         logger.info("\n📊 Indexing rooms and type_rooms...")
         try:
-            # Sử dụng IndexingService từ src/core/ thay vì old implementation
-            from src.core import EmbeddingService, SparseEmbeddingService, VectorStoreService, RAGService
-            
-            # Initialize IndexingService
-            embedding_service = EmbeddingService(
-                provider="ollama",
-                model_name=settings.EMBEDDING_MODEL,
-                ollama_url=settings.OLLAMA_URL,
-                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
-            )
-            
-            sparse_service = None
-            try:
-                sparse_service = SparseEmbeddingService(
-                    model_name="Qdrant/bm25",
-                    cache_enabled=settings.EMBEDDING_CACHE_ENABLED
-                )
-            except Exception as e:
-                logger.warning(f"Sparse embedding service not available: {e}")
-            
-            vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
-            
-            indexing_service = IndexingService(
-                embedding_service=embedding_service,
-                sparse_embedding_service=sparse_service,
-                vectorstore_service=vectorstore_service
-            )
-            
-            # Initialize RAGService để pass vào indexing methods
-            rag_service = RAGService(
-                embedding_service=embedding_service,
-                vectorstore_service=vectorstore_service,
-                collection_name=settings.RAG_COLLECTION_HOTELS
-            )
-            
             # Index rooms
             logger.info("  🔄 Indexing rooms...")
             rooms_result = indexing_service.index_rag_rooms(
                 collection_name=settings.RAG_COLLECTION_HOTELS,
-                rag_service=rag_service,
+                rag_service=rag_service_hotels,
                 batch_size=50
             )
             
@@ -171,7 +204,7 @@ def index_rag_data():
             logger.info("  🔄 Indexing type_rooms...")
             type_rooms_result = indexing_service.index_rag_type_rooms(
                 collection_name=settings.RAG_COLLECTION_HOTELS,
-                rag_service=rag_service,
+                rag_service=rag_service_hotels,
                 batch_size=50
             )
             
@@ -191,15 +224,47 @@ def index_rag_data():
             import traceback
             logger.debug(traceback.format_exc())
         
-        # Index coupons  
+        # Index coupons
         logger.info("\n📊 Indexing coupons...")
-        rag.index_coupons_from_database(
-            use_chunking=True,
-            chunk_size=800,
-            recreate_collection=False,
-            batch_size=10,
-            incremental=True
-        )
+        try:
+            coupons_df = db_connector.get_coupons(valid_only=True)
+            if coupons_df.empty:
+                logger.warning("No coupons found in database")
+            else:
+                normalized_df = normalizer.normalize_coupons(coupons_df)
+                
+                # Prepare documents
+                documents = []
+                for idx, row in normalized_df.iterrows():
+                    # Use large integer ID to avoid conflict with hotel IDs
+                    doc = {
+                        'id': 1000000 + int(row['coupon_id']),  # Offset to avoid collision
+                        'text': row['semantic_text'],
+                        'coupon_id': int(row['coupon_id']),
+                        'coupon_name': str(row.get('coupon_name', '')),
+                        'coupon_code': str(row.get('coupon_code', '')),
+                        'coupon_price_sale': float(row.get('coupon_price_sale', 0)) if pd.notna(row.get('coupon_price_sale')) else 0,
+                        'document_type': 'coupon'
+                    }
+                    documents.append(doc)
+                
+                # Index using RAGService
+                success = rag_service_coupons.index_documents(
+                    documents=documents,
+                    id_field='id',
+                    text_field='text',
+                    metadata_fields=['coupon_id', 'coupon_name', 'coupon_code', 'coupon_price_sale', 'document_type'],
+                    recreate_collection=False
+                )
+                
+                if success:
+                    logger.info(f"  ✅ Indexed {len(documents)} coupons")
+                else:
+                    logger.warning("  ⚠️  Failed to index coupons")
+        except Exception as e:
+            logger.error(f"  ❌ Error indexing coupons: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
         
         logger.info("\n✅ RAG data indexed successfully!")
         return True
@@ -226,7 +291,7 @@ def index_recommendation_data():
         logger.info("Initializing indexing service...")
         settings = get_settings()
         
-        from src.core import EmbeddingService, SparseEmbeddingService, VectorStoreService
+        from src.core import EmbeddingService, VectorStoreService
         
         embedding_service = EmbeddingService(
             provider="ollama",
@@ -235,20 +300,11 @@ def index_recommendation_data():
             cache_enabled=settings.EMBEDDING_CACHE_ENABLED
         )
         
-        sparse_service = None
-        try:
-            sparse_service = SparseEmbeddingService(
-                model_name="Qdrant/bm25",
-                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
-            )
-        except Exception as e:
-            logger.warning(f"Sparse embedding service not available: {e}")
-        
         vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
         
         indexing_service = IndexingService(
             embedding_service=embedding_service,
-            sparse_embedding_service=sparse_service,
+            sparse_embedding_service=None,  # No sparse vectors
             vectorstore_service=vectorstore_service
         )
         
@@ -256,7 +312,7 @@ def index_recommendation_data():
         result = indexing_service.index_recommendation_hotels(
             collection_name=settings.REC_COLLECTION_HOTELS,
             recreate_collection=False,
-            batch_size=10
+            batch_size=5  # Reduced batch size to avoid JSON size issues
         )
         
         if result.get('success'):
@@ -270,6 +326,62 @@ def index_recommendation_data():
         
     except Exception as e:
         logger.error(f"❌ Recommendation indexing failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def index_semantic_data():
+    """
+    Index data cho Semantic Search system
+    Sử dụng IndexingService từ src/core/
+    Tương tự như recommendation nhưng cho collection semantic
+    """
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("🔍 SEMANTIC: Indexing Data for Semantic Search")
+    logger.info("=" * 80)
+    
+    try:
+        # Initialize indexing service
+        logger.info("Initializing indexing service...")
+        settings = get_settings()
+        
+        from src.core import EmbeddingService, VectorStoreService
+        
+        embedding_service = EmbeddingService(
+            provider="ollama",
+            model_name=settings.EMBEDDING_MODEL,
+            ollama_url=settings.OLLAMA_URL,
+            cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+        )
+        
+        vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
+        
+        indexing_service = IndexingService(
+            embedding_service=embedding_service,
+            sparse_embedding_service=None,  # No sparse vectors
+            vectorstore_service=vectorstore_service
+        )
+        
+        # Index hotels vào semantic collection
+        result = indexing_service.index_recommendation_hotels(
+            collection_name=settings.REC_COLLECTION_SEMANTIC,
+            recreate_collection=False,
+            batch_size=10
+        )
+        
+        if result.get('success'):
+            logger.info(f"\n✅ Semantic data indexed successfully!")
+            logger.info(f"   Indexed: {result.get('indexed')} hotels")
+            logger.info(f"   Skipped: {result.get('skipped')} hotels")
+            return True
+        else:
+            logger.error(f"❌ Semantic indexing failed: {result.get('error')}")
+            return False
+        
+    except Exception as e:
+        logger.error(f"❌ Semantic indexing failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -342,7 +454,9 @@ def main():
             rag_success = index_rag_data()
             # Index Recommendation data
             rec_success = index_recommendation_data()
-            if not (rag_success and rec_success):
+            # Index Semantic data
+            semantic_success = index_semantic_data()
+            if not (rag_success and rec_success and semantic_success):
                 logger.warning("\n⚠️  Some indexing failed, but collections are ready")
         else:
             logger.info("\n✅ All collections up-to-date, skipping indexing")

@@ -180,7 +180,7 @@ class IndexingService:
                 if pd.notna(hotel.get('hotel_name')) and str(hotel.get('hotel_name')).strip():
                     description_parts.append(f"Tên: {hotel['hotel_name']}")
                 if pd.notna(hotel.get('hotel_desc')) and str(hotel.get('hotel_desc')).strip():
-                    description_parts.append(str(hotel['hotel_desc'])[:500])
+                    description_parts.append(str(hotel['hotel_desc']))  # Keep full description
                 if pd.notna(hotel.get('hotel_placedetails')) and str(hotel.get('hotel_placedetails')).strip():
                     description_parts.append(f"Địa chỉ: {hotel['hotel_placedetails']}")
                 
@@ -190,16 +190,36 @@ class IndexingService:
                     logger.warning(f"Skipping hotel {hotel_id}: no valid description")
                     continue
                 
-                if len(full_description) > 512:
-                    full_description = full_description[:512]
+                # Keep full description, don't truncate
                 
                 hotel_texts.append(full_description)
+                # Clean metadata to ensure JSON-serializable values
+                hotel_name = hotel.get('hotel_name', f'Hotel {hotel_id}')
+                if pd.isna(hotel_name) or hotel_name is None:
+                    hotel_name = f'Hotel {hotel_id}'
+                hotel_name = str(hotel_name).strip()
+                
+                hotel_rank = hotel.get('hotel_rank', 0)
+                if pd.isna(hotel_rank) or hotel_rank is None:
+                    hotel_rank = 0.0
+                hotel_rank = float(hotel_rank)
+                
+                hotel_price_average = hotel.get('hotel_price_average', 0)
+                if pd.isna(hotel_price_average) or hotel_price_average is None:
+                    hotel_price_average = 0.0
+                hotel_price_average = float(hotel_price_average)
+                
+                area_id = hotel.get('area_id', 0)
+                if pd.isna(area_id) or area_id is None:
+                    area_id = 0
+                area_id = int(area_id)
+                
                 hotel_metadata.append({
                     'hotel_id': int(hotel_id),
-                    'hotel_name': str(hotel.get('hotel_name', f'Hotel {hotel_id}')),
-                    'hotel_rank': float(hotel.get('hotel_rank', 0)),
-                    'hotel_price_average': float(hotel.get('hotel_price_average', 0)),
-                    'area_id': int(hotel.get('area_id', 0)) if pd.notna(hotel.get('area_id')) else 0
+                    'hotel_name': hotel_name,
+                    'hotel_rank': hotel_rank,
+                    'hotel_price_average': hotel_price_average,
+                    'area_id': area_id
                 })
             
             logger.info(f"Prepared {len(hotel_texts)} hotels for indexing")
@@ -219,46 +239,74 @@ class IndexingService:
                 else:
                     logger.debug(f"Embedded batch {batch_num}/{total_batches}")
             
-            # Create sparse embeddings (if available)
-            sparse_embeddings = []
-            if self.sparse_embedding_service and self.sparse_embedding_service.is_available:
-                logger.info("\n📊 Creating sparse embeddings (BM25)...")
-                sparse_embeddings = self.sparse_embedding_service.embed_documents(
-                    hotel_texts, 
-                    batch_size=32
-                )
-                logger.info(f"Created {len(sparse_embeddings)} sparse embeddings")
-            else:
-                sparse_embeddings = [None] * len(hotel_texts)
-                logger.info("Sparse embeddings skipped (service not available)")
+            # Check if collection uses named vectors (for backward compatibility)
+            uses_named_vectors = False
+            try:
+                collection_info = self.vectorstore_service.get_collection_info(collection_name)
+                if collection_info and hasattr(collection_info, 'config'):
+                    vectors_config = collection_info.config.params.vectors
+                    # Named vectors are dict, single vector is VectorParams
+                    if isinstance(vectors_config, dict):
+                        uses_named_vectors = True
+                        logger.debug(f"Collection {collection_name} uses named vectors: {list(vectors_config.keys())}")
+            except Exception as e:
+                logger.debug(f"Could not check collection config: {e}")
             
-            # Create points with hybrid vectors
-            logger.info("\n📊 Creating points with hybrid vectors...")
+            # Create points with dense vectors only (no sparse/hybrid)
+            logger.info("\n📊 Creating points with dense vectors...")
             points = []
-            for idx, (dense_emb, sparse_emb, metadata) in enumerate(zip(dense_embeddings, sparse_embeddings, hotel_metadata)):
+            skipped_count = 0
+            for idx, (dense_emb, metadata) in enumerate(zip(dense_embeddings, hotel_metadata)):
                 try:
                     # Convert dense embedding to list
                     dense_list = dense_emb.tolist() if hasattr(dense_emb, 'tolist') else list(dense_emb)
                     
-                    # Check for NaN/Inf
+                    # Check for NaN/Inf in embedding
                     if not all(np.isfinite(dense_list)):
                         logger.warning(f"Skipping hotel {metadata['hotel_id']}: invalid embedding (NaN/Inf)")
+                        skipped_count += 1
                         continue
                     
-                    # Create point with hybrid vectors
-                    point = self._create_hybrid_point(
-                        point_id=metadata['hotel_id'],
-                        dense_vector=dense_list,
-                        sparse_vector=sparse_emb if sparse_emb else None,
-                        payload=metadata
+                    # Clean payload to ensure JSON-serializable (remove any NaN, None, etc.)
+                    clean_payload = {}
+                    for key, value in metadata.items():
+                        if value is None or (isinstance(value, float) and (np.isnan(value) or np.isinf(value))):
+                            # Replace invalid values with defaults
+                            if key == 'hotel_rank' or key == 'hotel_price_average':
+                                clean_payload[key] = 0.0
+                            elif key == 'area_id':
+                                clean_payload[key] = 0
+                            elif key == 'hotel_name':
+                                clean_payload[key] = f"Hotel {metadata['hotel_id']}"
+                            else:
+                                clean_payload[key] = value
+                        else:
+                            clean_payload[key] = value
+                    
+                    # Use named vector format only if collection has named vectors (backward compatibility)
+                    if uses_named_vectors:
+                        # Collection uses named vectors, use "dense" as vector name
+                        vector_dict = {"dense": dense_list}
+                    else:
+                        # Collection uses single vector, use vector directly
+                        vector_dict = dense_list
+                    
+                    # Create point with single dense vector
+                    point = PointStruct(
+                        id=metadata['hotel_id'],
+                        vector=vector_dict,
+                        payload=clean_payload
                     )
                     points.append(point)
                     
                 except Exception as e:
                     logger.warning(f"Skipping hotel {metadata['hotel_id']}: {e}")
+                    skipped_count += 1
+                    import traceback
+                    logger.debug(traceback.format_exc())
                     continue
             
-            logger.info(f"Created {len(points)} points")
+            logger.info(f"Created {len(points)} points (skipped {skipped_count} hotels)")
             
             # Upload to Qdrant
             if points:
@@ -352,15 +400,17 @@ class IndexingService:
         logger.info("=" * 80)
         
         try:
-            # Import data modules (from rag/data/)
-            import sys
-            from pathlib import Path
-            rag_data_path = Path(__file__).parent.parent.parent / 'rag' / 'data'
-            if str(rag_data_path) not in sys.path:
-                sys.path.insert(0, str(rag_data_path.parent))
-            
-            from data.connector import DatabaseConnector
-            from data.normalizer import HotelDataNormalizer
+            # Import data modules (from src/data/)
+            try:
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
+            except ImportError:
+                # Fallback for relative import
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
             
             # Initialize database connector and normalizer
             db_connector = DatabaseConnector()
@@ -387,15 +437,22 @@ class IndexingService:
             # Convert to documents format
             documents = []
             for _, row in normalized_df.iterrows():
+                room_id = int(row['room_id'])
+                type_room_id = int(row.get('type_room_id', 0))
+                # Create unique integer ID: room_id * 1000000 + type_room_id
+                # This ensures unique IDs for Qdrant (which requires integer or UUID)
+                # Offset: 2000000 to avoid collision with hotels (hotel_id * 1000000)
+                point_id = 2000000 + (room_id * 1000 + type_room_id)
+                
                 doc = {
-                    'id': f"room_{int(row['room_id'])}_{int(row.get('type_room_id', 0))}",  # Unique ID
+                    'id': point_id,  # Integer ID for Qdrant
                     'text': row['semantic_text'],
                     'page_content': row['semantic_text'],  # For compatibility
                     'document_type': 'room',
                     'hotel_id': int(row['hotel_id']),
                     'hotel_name': str(row.get('hotel_name', '')),
-                    'room_id': int(row['room_id']),
-                    'type_room_id': int(row.get('type_room_id', 0)),
+                    'room_id': room_id,
+                    'type_room_id': type_room_id,
                     'price': float(row.get('search_price', 0)),
                     'type_name': str(row.get('room_name', ''))
                 }
@@ -472,15 +529,17 @@ class IndexingService:
         logger.info("=" * 80)
         
         try:
-            # Import data modules
-            import sys
-            from pathlib import Path
-            rag_data_path = Path(__file__).parent.parent.parent / 'rag' / 'data'
-            if str(rag_data_path) not in sys.path:
-                sys.path.insert(0, str(rag_data_path.parent))
-            
-            from data.connector import DatabaseConnector
-            from data.normalizer import HotelDataNormalizer
+            # Import data modules (from src/data/)
+            try:
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
+            except ImportError:
+                # Fallback for relative import
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
             
             # Initialize
             db_connector = DatabaseConnector()
@@ -516,12 +575,17 @@ class IndexingService:
                     except:
                         hotel_ids_list = []
                 
+                type_room_id = int(row['type_room_id'])
+                # Create unique integer ID for Qdrant
+                # Offset: 3000000 to avoid collision with hotels and rooms
+                point_id = 3000000 + type_room_id
+                
                 doc = {
-                    'id': f"type_room_{int(row['type_room_id'])}",
+                    'id': point_id,  # Integer ID for Qdrant
                     'text': row['semantic_text'],
                     'page_content': row['semantic_text'],
                     'document_type': 'type_room',
-                    'type_room_id': int(row['type_room_id']),
+                    'type_room_id': type_room_id,
                     'type_room_name': str(row.get('type_room_name', '')),
                     'hotel_ids': hotel_ids_list,
                     'hotel_names': str(row.get('hotel_names', '')),
@@ -614,6 +678,19 @@ class IndexingService:
             logger.info(f"Embedding {len(texts_to_embed)} documents...")
             vectors = self.embedding_service.embed_documents(texts_to_embed, batch_size=batch_size)
             
+            # Check if collection uses named vectors (for backward compatibility)
+            uses_named_vectors = False
+            try:
+                collection_info = self.vectorstore_service.get_collection_info(collection_name)
+                if collection_info and hasattr(collection_info, 'config'):
+                    vectors_config = collection_info.config.params.vectors
+                    # Named vectors are dict, single vector is VectorParams
+                    if isinstance(vectors_config, dict):
+                        uses_named_vectors = True
+                        logger.debug(f"Collection {collection_name} uses named vectors: {list(vectors_config.keys())}")
+            except Exception as e:
+                logger.debug(f"Could not check collection config: {e}")
+            
             # Create points
             points = []
             for (doc, text), vector in zip(valid_docs, vectors):
@@ -627,7 +704,9 @@ class IndexingService:
                     
                     # Create point ID
                     point_id = doc['id']
-                    # If ID is string like "room_123_456", extract numeric parts
+                    # Ensure point_id is integer (Qdrant only accepts integer or UUID)
+                    # IDs should already be integers from index_rag_rooms/index_rag_type_rooms,
+                    # but handle string IDs as fallback for compatibility
                     if isinstance(point_id, str):
                         if point_id.startswith('room_'):
                             # Format: room_{room_id}_{type_room_id}
@@ -635,9 +714,10 @@ class IndexingService:
                             if len(parts) >= 3:
                                 try:
                                     # Combine room_id and type_room_id into unique int
+                                    # Offset: 2000000 to avoid collision with hotels
                                     room_id = int(parts[1])
                                     type_id = int(parts[2]) if len(parts) > 2 else 0
-                                    point_id = room_id * 1000000 + type_id  # room_id * 1M + type_id
+                                    point_id = 2000000 + (room_id * 1000 + type_id)
                                 except ValueError:
                                     # Fallback to hash
                                     import hashlib
@@ -647,7 +727,8 @@ class IndexingService:
                             parts = point_id.split('_')
                             if len(parts) >= 3:
                                 try:
-                                    point_id = int(parts[2]) + 1000000000  # Offset to avoid collision with rooms
+                                    # Offset: 3000000 to avoid collision with hotels and rooms
+                                    point_id = 3000000 + int(parts[2])
                                 except ValueError:
                                     import hashlib
                                     point_id = int(hashlib.md5(point_id.encode()).hexdigest()[:8], 16)
@@ -656,9 +737,25 @@ class IndexingService:
                             import hashlib
                             point_id = int(hashlib.md5(point_id.encode()).hexdigest()[:8], 16)
                     
+                    # Ensure point_id is integer
+                    try:
+                        point_id = int(point_id)
+                    except (ValueError, TypeError):
+                        # Last resort: use hash
+                        import hashlib
+                        point_id = int(hashlib.md5(str(point_id).encode()).hexdigest()[:8], 16)
+                    
+                    # Use named vector format if collection has named vectors (backward compatibility)
+                    if uses_named_vectors:
+                        # Collection uses named vectors, use "dense" as vector name
+                        vector_dict = {"dense": vector_list}
+                    else:
+                        # Collection uses single vector, use vector directly
+                        vector_dict = vector_list
+                    
                     point = PointStruct(
                         id=point_id,
-                        vector=vector_list,
+                        vector=vector_dict,
                         payload=payload
                     )
                     points.append(point)

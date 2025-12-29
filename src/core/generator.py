@@ -373,6 +373,37 @@ class GeneratorService:
         
         return sources
     
+    def _get_prompt_for_collection(self, collection_name: str) -> str:
+        """
+        Get prompt template phù hợp với collection
+        
+        Args:
+            collection_name: 'hotels_rag' hoặc 'policy_documents'
+            
+        Returns:
+            Prompt template string
+        """
+        if collection_name == 'policy_documents':
+            return """Bạn là trợ lý tư vấn về chính sách và quy định đặt phòng khách sạn. Trả lời HOÀN TOÀN bằng tiếng Việt.
+
+Thông tin chính sách và quy định:
+{context}
+
+Câu hỏi: {question}
+
+QUY TẮC:
+1. CHỈ trả lời dựa trên thông tin chính sách, quy định, điều khoản trong context.
+2. Nếu không có thông tin phù hợp, trả lời: "Không tìm thấy thông tin về chính sách này trong hệ thống."
+3. Trích dẫn chính xác các điều khoản từ context.
+4. Trả lời rõ ràng, chính xác về các điều kiện, thời hạn, mức phí (nếu có).
+
+Trả lời chi tiết, rõ ràng bằng tiếng Việt:
+
+Trả lời:"""
+        else:
+            # Default: hotels_rag
+            return self._get_default_prompt()
+    
     def _get_default_prompt(self) -> str:
         """
         Get optimized RAG prompt template (reduced from ~2000 to ~800 tokens)

@@ -68,6 +68,30 @@ class HotelDataNormalizer:
         
         return text
     
+    def _categorize_price(self, price: float) -> str:
+        """
+        Categorize price into price ranges
+        
+        Args:
+            price: Hotel average price (VND)
+            
+        Returns:
+            Price category string
+        """
+        if not price or price <= 0:
+            return "giá chưa xác định"
+        
+        if price < 500000:
+            return "giá rẻ"
+        elif price < 1000000:
+            return "giá trung bình"
+        elif price < 2000000:
+            return "giá khá"
+        elif price < 3000000:
+            return "giá cao"
+        else:
+            return "giá rất cao"
+    
     def extract_features(self, hotel_data: Dict) -> List[str]:
         """
         Extract features from hotel data
@@ -138,9 +162,7 @@ class HotelDataNormalizer:
         # Description
         if 'hotel_desc' in hotel_data and hotel_data['hotel_desc']:
             desc = str(hotel_data['hotel_desc'])
-            # Truncate if too long
-            if len(desc) > 500:
-                desc = desc[:500] + "..."
+            # Keep full description, don't truncate
             parts.append(f"Mô tả: {desc}")
         
         # Features
@@ -239,6 +261,146 @@ class HotelDataNormalizer:
         df['document_type'] = 'coupon'
         
         logger.info(f"✅ Normalized {len(df)} coupons")
+        return df
+    
+    def normalize_rooms(self, rooms_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normalize rooms DataFrame
+        
+        Args:
+            rooms_df: Rooms DataFrame with enriched data
+            
+        Returns:
+            Normalized DataFrame with semantic_text column
+        """
+        logger.info(f"Normalizing {len(rooms_df)} rooms...")
+        
+        df = rooms_df.copy()
+        
+        # Create semantic text for each room
+        semantic_texts = []
+        for idx, row in df.iterrows():
+            parts = []
+            
+            # Room name
+            if pd.notna(row.get('room_name')) and str(row.get('room_name')).strip():
+                parts.append(f"Tên phòng: {row['room_name']}")
+            
+            # Hotel info
+            if pd.notna(row.get('hotel_name')) and str(row.get('hotel_name')).strip():
+                parts.append(f"Khách sạn: {row['hotel_name']}")
+            
+            if pd.notna(row.get('area_name')) and str(row.get('area_name')).strip():
+                parts.append(f"Khu vực: {row['area_name']}")
+            
+            # Room details
+            if pd.notna(row.get('room_amount_of_people')):
+                parts.append(f"Sức chứa: {int(row['room_amount_of_people'])} người")
+            
+            if pd.notna(row.get('room_price')):
+                price = float(row['room_price'])
+                parts.append(f"Giá: {price:,.0f} VND")
+            
+            if pd.notna(row.get('type_room_price_sale')):
+                sale_price = float(row['type_room_price_sale'])
+                parts.append(f"Giá khuyến mãi: {sale_price:,.0f} VND")
+            
+            if pd.notna(row.get('type_room_bed')):
+                parts.append(f"Giường: {int(row['type_room_bed'])} giường")
+            
+            if pd.notna(row.get('type_room_condition')):
+                condition = int(row['type_room_condition'])
+                parts.append(f"Điều kiện: {'Có điều hòa' if condition == 1 else 'Không điều hòa'}")
+            
+            semantic_text = ". ".join(parts)
+            semantic_texts.append(semantic_text)
+        
+        df['semantic_text'] = semantic_texts
+        
+        # Fill NaN values
+        df = df.fillna({
+            'room_name': '',
+            'hotel_name': '',
+            'area_name': '',
+            'room_amount_of_people': 0,
+            'room_price': 0,
+            'type_room_price_sale': 0,
+            'type_room_bed': 0,
+            'type_room_condition': 0
+        })
+        
+        logger.info(f"✅ Normalized {len(df)} rooms")
+        return df
+    
+    def normalize_type_rooms(self, type_rooms_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normalize type_rooms DataFrame
+        
+        Args:
+            type_rooms_df: Type rooms DataFrame with enriched data
+            
+        Returns:
+            Normalized DataFrame with semantic_text column
+        """
+        logger.info(f"Normalizing {len(type_rooms_df)} type_rooms...")
+        
+        df = type_rooms_df.copy()
+        
+        # Create semantic text for each type_room
+        semantic_texts = []
+        for idx, row in df.iterrows():
+            parts = []
+            
+            # Type room name
+            if pd.notna(row.get('type_room_name')) and str(row.get('type_room_name')).strip():
+                parts.append(f"Loại phòng: {row['type_room_name']}")
+            
+            # Hotels using this type
+            if pd.notna(row.get('hotel_names')) and str(row.get('hotel_names')).strip():
+                parts.append(f"Khách sạn: {row['hotel_names']}")
+            
+            # Price range
+            if pd.notna(row.get('search_min_price')) and pd.notna(row.get('search_max_price')):
+                min_price = float(row['search_min_price'])
+                max_price = float(row['search_max_price'])
+                if min_price == max_price:
+                    parts.append(f"Giá: {min_price:,.0f} VND")
+                else:
+                    parts.append(f"Giá: {min_price:,.0f} - {max_price:,.0f} VND")
+            
+            if pd.notna(row.get('search_avg_price')):
+                avg_price = float(row['search_avg_price'])
+                parts.append(f"Giá trung bình: {avg_price:,.0f} VND")
+            
+            # Room details
+            if pd.notna(row.get('type_room_bed')):
+                parts.append(f"Giường: {int(row['type_room_bed'])} giường")
+            
+            if pd.notna(row.get('type_room_condition')):
+                condition = int(row['type_room_condition'])
+                parts.append(f"Điều kiện: {'Có điều hòa' if condition == 1 else 'Không điều hòa'}")
+            
+            if pd.notna(row.get('room_count')):
+                parts.append(f"Số lượng phòng: {int(row['room_count'])} phòng")
+            
+            semantic_text = ". ".join(parts)
+            semantic_texts.append(semantic_text)
+        
+        df['semantic_text'] = semantic_texts
+        
+        # Fill NaN values
+        df = df.fillna({
+            'type_room_name': '',
+            'hotel_names': '',
+            'search_min_price': 0,
+            'search_max_price': 0,
+            'search_avg_price': 0,
+            'type_room_bed': 0,
+            'type_room_condition': 0,
+            'room_count': 0
+        })
+        
+        logger.info(f"✅ Normalized {len(df)} type_rooms")
         return df
 
 

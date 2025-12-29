@@ -28,6 +28,7 @@ class Settings:
         
         # Recommendation collections
         self.REC_COLLECTION_HOTELS = os.getenv('REC_COLLECTION_HOTELS', Collections.RECOMMENDATION_HOTELS)
+        self.REC_COLLECTION_SEMANTIC = os.getenv('REC_COLLECTION_SEMANTIC', Collections.RECOMMENDATION_SEMANTIC)
         
         # Legacy support
         self.COLLECTION_NAME = os.getenv('COLLECTION_NAME', Collections.LEGACY_RAG)
