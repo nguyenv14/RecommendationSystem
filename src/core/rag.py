@@ -251,78 +251,63 @@ class RAGService:
             if top_k is None:
                 top_k = 5  # Default k=5
             
-            # Search in main collection (hotels)
-            # Use Qdrant grouping to ensure diverse hotels (1 chunk per hotel)
-            # This is more efficient than manual deduplication
-            # Note: Embedding cache is handled inside RetrieverService.retrieve()
-            # which calls EmbeddingService.embed_query() which checks cache
-            documents = self.retriever_service.retrieve(
-                query=processed_query,  # Use processed query
-                collection_name=self.collection_name,
-                top_k=top_k,  # Number of unique hotels to return
-                filters=filters,
-                use_grouping=True,  # Use Qdrant grouping to ensure diversity
-                group_by="hotel_id"  # Group by hotel_id to get diverse hotels
-            )
-            
-            logger.info(f"Retrieved {len(documents)} documents from {len(documents)} unique hotels (using Qdrant grouping)")
-            
-            # Also search in policy_documents collection if it exists
+            # Step 3: Search BOTH collections in parallel to compare scores
+            # Score-based routing: Chọn collection có average score cao hơn
+            hotel_documents = []
             policy_documents = []
+            hotel_avg_score = 0.0
+            policy_avg_score = 0.0
+            
+            # Search hotels_rag collection
+            try:
+                hotel_documents = self.retriever_service.retrieve(
+                    query=processed_query,
+                    collection_name=self.collection_name,  # hotels_rag
+                    top_k=top_k,
+                    filters=filters,
+                    use_grouping=True,
+                    group_by="hotel_id"
+                )
+                if hotel_documents:
+                    hotel_avg_score = sum(d.get('score', 0.0) for d in hotel_documents) / len(hotel_documents)
+                logger.info(f"🏨 hotels_rag: {len(hotel_documents)} docs, avg_score={hotel_avg_score:.4f}")
+            except Exception as e:
+                logger.warning(f"Error searching hotels_rag: {e}")
+            
+            # Search policy_documents collection (if exists)
+            target_collection = 'hotels_rag'  # Default
+            target_documents = hotel_documents
             try:
                 if self.vectorstore_service.collection_exists('policy_documents'):
-                    logger.info("🔍 Also searching in policy_documents collection...")
                     policy_documents = self.retriever_service.retrieve(
                         query=processed_query,
                         collection_name='policy_documents',
-                        top_k=min(top_k, 3),  # Limit policy docs to avoid overwhelming results
-                        filters=None,  # No filters for policy documents
-                        use_grouping=False,  # Policy docs don't need grouping
+                        top_k=top_k,
+                        filters=None,
+                        use_grouping=False,
                         group_by=None
                     )
-                    logger.info(f"Retrieved {len(policy_documents)} documents from policy_documents collection")
+                    if policy_documents:
+                        policy_avg_score = sum(d.get('score', 0.0) for d in policy_documents) / len(policy_documents)
+                    logger.info(f"📋 policy_documents: {len(policy_documents)} docs, avg_score={policy_avg_score:.4f}")
                     
-                    # Merge policy documents with main documents
-                    # Add a marker to distinguish policy documents
-                    for doc in policy_documents:
-                        doc['is_policy'] = True
-                        doc['source'] = 'policy_documents'
-                    
-                    # Merge and sort by score
-                    all_documents = documents + policy_documents
-                    all_documents = sorted(all_documents, key=lambda x: x.get('score', 0), reverse=True)
-                    
-                    # Take top_k from merged results
-                    documents = all_documents[:top_k]
-                    logger.info(f"Merged results: {len([d for d in documents if d.get('is_policy')])} policy docs, "
-                              f"{len([d for d in documents if not d.get('is_policy')])} hotel docs")
+                    # Compare scores and choose collection with higher average score
+                    # Only choose policy if it has documents AND higher score (with threshold)
+                    score_threshold = 0.05  # Policy needs to be at least 0.05 better
+                    if policy_documents and policy_avg_score > hotel_avg_score + score_threshold:
+                        target_collection = 'policy_documents'
+                        target_documents = policy_documents
+                        logger.info(f"✅ Routing to policy_documents (score: {policy_avg_score:.4f} > {hotel_avg_score:.4f})")
+                    else:
+                        logger.info(f"✅ Routing to hotels_rag (score: {hotel_avg_score:.4f} >= {policy_avg_score:.4f})")
+                else:
+                    logger.info("policy_documents collection not found, using hotels_rag only")
             except Exception as e:
-                logger.warning(f"Could not search in policy_documents collection: {e}")
-                # Continue with main documents only
+                logger.warning(f"Error searching policy_documents: {e}")
+                # Fallback to hotels_rag
             
-            # Check if question is about hotel rooms and extract hotel_id from search results
-            # Only extract from non-policy documents
-            hotel_docs = [d for d in documents if not d.get('is_policy')]
-            hotel_id = self._extract_hotel_id_from_documents(hotel_docs, question) if hotel_docs else None
-            hotel_rooms_docs = []
-            hotel_type_rooms_docs = []
-            
-            if hotel_id:
-                logger.info(f"🔍 Detected hotel_id={hotel_id} in question, fetching rooms and type_rooms...")
-                # Get rooms for this hotel
-                hotel_rooms_docs = self._get_hotel_rooms(hotel_id, top_k=20)
-                # Get type_rooms used by this hotel
-                hotel_type_rooms_docs = self._get_hotel_type_rooms(hotel_id, top_k=10)
-                logger.info(f"   Found {len(hotel_rooms_docs)} rooms and {len(hotel_type_rooms_docs)} type_rooms")
-            
-            # Merge hotel info with rooms and type_rooms if available
-            if hotel_rooms_docs or hotel_type_rooms_docs:
-                # Add rooms and type_rooms to documents for context
-                documents.extend(hotel_rooms_docs)
-                documents.extend(hotel_type_rooms_docs)
-                # Sort by score (rooms/type_rooms might not have scores, put them after)
-                documents = sorted(documents, key=lambda x: x.get('score', -1), reverse=True)
-                logger.info(f"Total documents after adding rooms: {len(documents)}")
+            # Step 4: Use ONLY the selected collection's documents
+            documents = target_documents
             
             if not documents:
                 logger.warning("No documents retrieved for question")
@@ -332,15 +317,44 @@ class RAGService:
                     "sources": [],
                     "num_sources": 0
                 }
-                # Cache negative result too (shorter TTL could be used)
                 if use_cache:
                     self.response_cache.set(question, result)
                 return result
             
-            logger.info(f"Retrieved {len(documents)} documents (expected: {top_k})")
+            # Step 5: Get collection-specific prompt template
+            collection_prompt_template = None
+            if target_collection == 'policy_documents':
+                collection_prompt_template = self.generator._get_prompt_for_collection('policy_documents')
+                # Skip hotel-specific logic (rooms, type_rooms) for policies
+                hotel_id = None
+                hotel_rooms_docs = []
+                hotel_type_rooms_docs = []
+            else:
+                # hotels_rag collection
+                collection_prompt_template = self.generator._get_prompt_for_collection('hotels_rag')
+                
+                # Extract hotel_id and get rooms/type_rooms (only for hotels)
+                hotel_id = self._extract_hotel_id_from_documents(documents, question)
+                hotel_rooms_docs = []
+                hotel_type_rooms_docs = []
+                
+                if hotel_id:
+                    logger.info(f"🔍 Detected hotel_id={hotel_id}, fetching rooms and type_rooms...")
+                    hotel_rooms_docs = self._get_hotel_rooms(hotel_id, top_k=20)
+                    hotel_type_rooms_docs = self._get_hotel_type_rooms(hotel_id, top_k=10)
+                    logger.info(f"   Found {len(hotel_rooms_docs)} rooms and {len(hotel_type_rooms_docs)} type_rooms")
+                    
+                    # Merge rooms and type_rooms with hotel documents
+                    if hotel_rooms_docs or hotel_type_rooms_docs:
+                        documents.extend(hotel_rooms_docs)
+                        documents.extend(hotel_type_rooms_docs)
+                        documents = sorted(documents, key=lambda x: x.get('score', -1), reverse=True)
             
-            # Step 5: Hybrid Search - TODO: implement
-            # For now, just use semantic search results
+            # Use collection-specific prompt if no custom prompt provided
+            if prompt_template is None:
+                prompt_template = collection_prompt_template
+            
+            logger.info(f"Retrieved {len(documents)} documents from {target_collection}")
             
             # Step 6: Re-rank Results using Cross-Encoder for better precision
             if len(documents) > 0 and self.reranker.is_available():
@@ -356,19 +370,27 @@ class RAGService:
                     logger.debug("Re-ranker not available, using original ranking")
                 # Keep original ranking if reranker not available
             
-            # Step 7-8: Build Context (với token limit) + Generate Answer
+            # Step 7-8: Build Context (với token limit) + Generate Answer with collection-specific prompt
             result = self.generator.generate_from_documents(
                 query=question,  # Use original question for generation
                 documents=documents,
-                prompt_template=prompt_template,
+                prompt_template=prompt_template,  # Use collection-specific prompt
                 max_context_tokens=4000  # Token limit
             )
+            
+            # Add routing info to result for debugging
+            result['routing'] = {
+                'collection': target_collection,
+                'hotel_avg_score': hotel_avg_score,
+                'policy_avg_score': policy_avg_score if policy_documents else None,
+                'confidence': max(hotel_avg_score, policy_avg_score) if policy_documents else hotel_avg_score
+            }
             
             # Step 9: Cache Response
             if use_cache:
                 self.response_cache.set(question, result)
             
-            logger.info(f"✅ RAG answer generated (sources: {len(result.get('sources', []))})")
+            logger.info(f"✅ RAG answer generated from {target_collection} (sources: {len(result.get('sources', []))})")
             return result
             
         except Exception as e:
