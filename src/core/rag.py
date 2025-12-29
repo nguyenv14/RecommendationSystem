@@ -251,6 +251,7 @@ class RAGService:
             if top_k is None:
                 top_k = 5  # Default k=5
             
+            # Search in main collection (hotels)
             # Use Qdrant grouping to ensure diverse hotels (1 chunk per hotel)
             # This is more efficient than manual deduplication
             # Note: Embedding cache is handled inside RetrieverService.retrieve()
@@ -266,8 +267,43 @@ class RAGService:
             
             logger.info(f"Retrieved {len(documents)} documents from {len(documents)} unique hotels (using Qdrant grouping)")
             
+            # Also search in policy_documents collection if it exists
+            policy_documents = []
+            try:
+                if self.vectorstore_service.collection_exists('policy_documents'):
+                    logger.info("🔍 Also searching in policy_documents collection...")
+                    policy_documents = self.retriever_service.retrieve(
+                        query=processed_query,
+                        collection_name='policy_documents',
+                        top_k=min(top_k, 3),  # Limit policy docs to avoid overwhelming results
+                        filters=None,  # No filters for policy documents
+                        use_grouping=False,  # Policy docs don't need grouping
+                        group_by=None
+                    )
+                    logger.info(f"Retrieved {len(policy_documents)} documents from policy_documents collection")
+                    
+                    # Merge policy documents with main documents
+                    # Add a marker to distinguish policy documents
+                    for doc in policy_documents:
+                        doc['is_policy'] = True
+                        doc['source'] = 'policy_documents'
+                    
+                    # Merge and sort by score
+                    all_documents = documents + policy_documents
+                    all_documents = sorted(all_documents, key=lambda x: x.get('score', 0), reverse=True)
+                    
+                    # Take top_k from merged results
+                    documents = all_documents[:top_k]
+                    logger.info(f"Merged results: {len([d for d in documents if d.get('is_policy')])} policy docs, "
+                              f"{len([d for d in documents if not d.get('is_policy')])} hotel docs")
+            except Exception as e:
+                logger.warning(f"Could not search in policy_documents collection: {e}")
+                # Continue with main documents only
+            
             # Check if question is about hotel rooms and extract hotel_id from search results
-            hotel_id = self._extract_hotel_id_from_documents(documents, question)
+            # Only extract from non-policy documents
+            hotel_docs = [d for d in documents if not d.get('is_policy')]
+            hotel_id = self._extract_hotel_id_from_documents(hotel_docs, question) if hotel_docs else None
             hotel_rooms_docs = []
             hotel_type_rooms_docs = []
             

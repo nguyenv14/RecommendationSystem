@@ -24,12 +24,22 @@ try:
 except ImportError:
     CouponDataNormalizer = None
 
+try:
+    from .document_parser import DocumentParser, DocumentIndexer, DocumentService
+except ImportError:
+    DocumentParser = None
+    DocumentIndexer = None
+    DocumentService = None
+
 __all__ = [
     'DatabaseConnector',
     'HotelDataNormalizer',
     'DataProcessor',
     'SmartChunker',
     'CouponDataNormalizer',
+    'DocumentParser',
+    'DocumentIndexer',
+    'DocumentService',
 ]
 
 # Make DataProcessor available via lazy import
