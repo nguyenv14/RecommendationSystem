@@ -130,20 +130,22 @@ class HotelDataNormalizer:
     def create_semantic_text(self, hotel_data: Dict) -> str:
         """
         Create semantic text for embedding
+        Chỉ chứa những thứ trừu tượng: Mô tả, Phong cách, Review, Tiện ích
+        KHÔNG bao gồm: Giá, Quận/Huyện cụ thể (sẽ được lưu trong Payload/Metadata)
         
         Args:
             hotel_data: Hotel data dict
             
         Returns:
-            Semantic text
+            Semantic text (chỉ chứa mô tả, phong cách, review, tiện ích)
         """
         parts = []
         
-        # Hotel name
+        # Hotel name (để context)
         if 'hotel_name' in hotel_data and hotel_data['hotel_name']:
             parts.append(f"Tên: {hotel_data['hotel_name']}")
         
-        # Rating
+        # Rating/Phong cách (trừu tượng)
         if 'hotel_rank' in hotel_data and hotel_data['hotel_rank']:
             rank = hotel_data['hotel_rank']
             if rank >= 4.5:
@@ -152,37 +154,24 @@ class HotelDataNormalizer:
                 parts.append("Khách sạn tốt")
             parts.append(f"Đánh giá: {rank} sao")
         
-        # Location
-        if 'hotel_place' in hotel_data and hotel_data['hotel_place']:
-            parts.append(f"Địa điểm: {hotel_data['hotel_place']}")
-        
-        if 'hotel_placedetails' in hotel_data and hotel_data['hotel_placedetails']:
-            parts.append(f"Chi tiết vị trí: {hotel_data['hotel_placedetails']}")
-        
-        # Description
+        # Description (Mô tả)
         if 'hotel_desc' in hotel_data and hotel_data['hotel_desc']:
             desc = str(hotel_data['hotel_desc'])
             # Keep full description, don't truncate
             parts.append(f"Mô tả: {desc}")
         
-        # Features
+        # Features/Amenities (Tiện ích đặc biệt)
         features = self.extract_features(hotel_data)
         if features:
             parts.append(f"Tiện nghi: {', '.join(features)}")
         
-        # Price range
-        if 'hotel_price_average' in hotel_data and hotel_data['hotel_price_average']:
-            price = hotel_data['hotel_price_average']
-            if price < 500000:
-                parts.append("Giá: Hợp lý")
-            elif price < 1000000:
-                parts.append("Giá: Trung bình")
-            else:
-                parts.append("Giá: Cao cấp")
-        
-        # Keywords
+        # Keywords/Tags (có thể chứa phong cách, đặc điểm)
         if 'hotel_tag_keyword' in hotel_data and hotel_data['hotel_tag_keyword']:
             parts.append(f"Từ khóa: {hotel_data['hotel_tag_keyword']}")
+        
+        # NOTE: KHÔNG bao gồm:
+        # - Location/Quận/Huyện (hotel_place, hotel_placedetails, area_name) -> Lưu trong Payload
+        # - Price/Giá (hotel_price_average) -> Lưu trong Payload
         
         semantic_text = ". ".join(parts)
         return semantic_text

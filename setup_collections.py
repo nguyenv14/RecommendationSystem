@@ -13,7 +13,7 @@ import pandas as pd
 # Add paths
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.config import get_settings, Collections
+from src.config import get_settings , Collections
 from src.shared import get_logger, setup_logging
 from src.core import VectorStoreService, IndexingService
 from qdrant_client.models import Distance, VectorParams
@@ -87,7 +87,7 @@ def create_collections(vectorstore: VectorStoreService):
 def index_rag_data():
     """
     Index data cho RAG system (chatbot)
-    Sử dụng RAGService và IndexingService từ src/core/
+    Sử dụng IndexingService từ src/core/ (Single Responsibility Principle)
     """
     logger.info("")
     logger.info("=" * 80)
@@ -95,179 +95,81 @@ def index_rag_data():
     logger.info("=" * 80)
     
     try:
-        # Initialize services
-        logger.info("Initializing services...")
+        # Initialize IndexingService
+        logger.info("Initializing IndexingService...")
         settings = get_settings()
         
-        from src.core import (
-            EmbeddingService, 
-            VectorStoreService, 
-            RAGService,
-            IndexingService
-        )
-        from src.data.connector import DatabaseConnector
-        from src.data.normalizer import HotelDataNormalizer
+        from src.core import EmbeddingService, VectorStoreService, IndexingService
         
-        # Create services (dense vectors only, no sparse/hybrid search)
-        embedding_service = EmbeddingService(
-            provider="ollama",
-            model_name=settings.EMBEDDING_MODEL,
-            ollama_url=settings.OLLAMA_URL,
-            cache_enabled=settings.EMBEDDING_CACHE_ENABLED
-        )
-        
-        vectorstore_service = VectorStoreService(url=settings.QDRANT_URL)
-        
-        # Create RAGService for hotels collection
-        rag_service_hotels = RAGService(
-            embedding_service=embedding_service,
-            vectorstore_service=vectorstore_service,
-            collection_name=settings.RAG_COLLECTION_HOTELS
-        )
-        
-        # Create RAGService for coupons collection
-        rag_service_coupons = RAGService(
-            embedding_service=embedding_service,
-            vectorstore_service=vectorstore_service,
-            collection_name=settings.RAG_COLLECTION_COUPONS
-        )
-        
-        # Create IndexingService for rooms/type_rooms (no sparse service)
+        # Create IndexingService (no sparse vectors)
         indexing_service = IndexingService(
-            embedding_service=embedding_service,
+            embedding_service=EmbeddingService(
+                provider="ollama",
+                model_name=settings.EMBEDDING_MODEL,
+                ollama_url=settings.OLLAMA_URL,
+                cache_enabled=settings.EMBEDDING_CACHE_ENABLED
+            ),
             sparse_embedding_service=None,  # No sparse vectors
-            vectorstore_service=vectorstore_service
+            vectorstore_service=VectorStoreService(url=settings.QDRANT_URL)
         )
         
-        # Initialize data connectors
-        db_connector = DatabaseConnector()
-        normalizer = HotelDataNormalizer()
-        
-        # Index hotels
+        # Index hotels (with chunking)
         logger.info("\n📊 Indexing hotels...")
-        try:
-            hotels_df = db_connector.get_hotels()
-            if hotels_df.empty:
-                logger.warning("No hotels found in database")
-            else:
-                normalized_df = normalizer.normalize_hotels(hotels_df)
-                
-                # Prepare documents
-                documents = []
-                for idx, row in normalized_df.iterrows():
-                    doc = {
-                        'id': int(row['hotel_id']),
-                        'text': row['semantic_text'],
-                        'hotel_id': int(row['hotel_id']),
-                        'hotel_name': str(row.get('hotel_name', '')),
-                        'hotel_rank': float(row.get('hotel_rank', 0)) if pd.notna(row.get('hotel_rank')) else 0,
-                        'hotel_view': int(row.get('hotel_view', 0)) if pd.notna(row.get('hotel_view')) else 0,
-                        'hotel_place': str(row.get('hotel_placedetails', '')),
-                        'hotel_price_average': float(row.get('hotel_price_average', 0)) if pd.notna(row.get('hotel_price_average')) else 0,
-                        'document_type': 'hotel'
-                    }
-                    documents.append(doc)
-                
-                # Index using RAGService
-                success = rag_service_hotels.index_documents(
-                    documents=documents,
-                    id_field='id',
-                    text_field='text',
-                    metadata_fields=['hotel_id', 'hotel_name', 'hotel_rank', 'hotel_view', 'hotel_place', 'hotel_price_average', 'document_type'],
-                    recreate_collection=False
-                )
-                
-                if success:
-                    logger.info(f"  ✅ Indexed {len(documents)} hotels")
-                else:
-                    logger.warning("  ⚠️  Failed to index hotels")
-        except Exception as e:
-            logger.error(f"  ❌ Error indexing hotels: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+        hotels_result = indexing_service.index_rag_hotels(
+            collection_name=settings.RAG_COLLECTION_HOTELS,
+            batch_size=32
+        )
+        if not hotels_result.get('success'):
+            logger.warning(f"  ⚠️  Hotels indexing failed: {hotels_result.get('error')}")
+        else:
+            logger.info(f"  ✅ Indexed {hotels_result.get('indexed', 0)} hotel chunks")
         
         # Index rooms and type_rooms (cùng collection với hotels)
         logger.info("\n📊 Indexing rooms and type_rooms...")
-        try:
-            # Index rooms
-            logger.info("  🔄 Indexing rooms...")
-            rooms_result = indexing_service.index_rag_rooms(
-                collection_name=settings.RAG_COLLECTION_HOTELS,
-                rag_service=rag_service_hotels,
-                batch_size=50
-            )
-            
-            if not rooms_result.get('success'):
-                logger.warning(f"  ⚠️  Rooms indexing failed: {rooms_result.get('error')}")
-            
-            # Index type_rooms
-            logger.info("  🔄 Indexing type_rooms...")
-            type_rooms_result = indexing_service.index_rag_type_rooms(
-                collection_name=settings.RAG_COLLECTION_HOTELS,
-                rag_service=rag_service_hotels,
-                batch_size=50
-            )
-            
-            if not type_rooms_result.get('success'):
-                logger.warning(f"  ⚠️  Type rooms indexing failed: {type_rooms_result.get('error')}")
-            
-            if rooms_result.get('success') and type_rooms_result.get('success'):
-                logger.info("  ✅ Rooms and type_rooms indexed successfully!")
-                logger.info(f"     - Rooms: {rooms_result.get('indexed', 0)} indexed")
-                logger.info(f"     - Type Rooms: {type_rooms_result.get('indexed', 0)} indexed")
-            else:
-                logger.warning("  ⚠️  Some indexing failed, but continuing...")
-                
-        except Exception as e:
-            logger.warning(f"  ⚠️  Failed to index rooms/type_rooms: {e}")
-            logger.warning("  Continuing with coupons indexing...")
-            import traceback
-            logger.debug(traceback.format_exc())
+        rooms_result = indexing_service.index_rag_rooms(
+            collection_name=settings.RAG_COLLECTION_HOTELS,
+            batch_size=50
+        )
+        if not rooms_result.get('success'):
+            logger.warning(f"  ⚠️  Rooms indexing failed: {rooms_result.get('error')}")
         
-        # Index coupons
+        type_rooms_result = indexing_service.index_rag_type_rooms(
+            collection_name=settings.RAG_COLLECTION_HOTELS,
+            batch_size=50
+        )
+        if not type_rooms_result.get('success'):
+            logger.warning(f"  ⚠️  Type rooms indexing failed: {type_rooms_result.get('error')}")
+        
+        if rooms_result.get('success') and type_rooms_result.get('success'):
+            logger.info("  ✅ Rooms and type_rooms indexed successfully!")
+            logger.info(f"     - Rooms: {rooms_result.get('indexed', 0)} indexed")
+            logger.info(f"     - Type Rooms: {type_rooms_result.get('indexed', 0)} indexed")
+        
+        # Index coupons (with chunking)
         logger.info("\n📊 Indexing coupons...")
-        try:
-            coupons_df = db_connector.get_coupons(valid_only=True)
-            if coupons_df.empty:
-                logger.warning("No coupons found in database")
-            else:
-                normalized_df = normalizer.normalize_coupons(coupons_df)
-                
-                # Prepare documents
-                documents = []
-                for idx, row in normalized_df.iterrows():
-                    # Use large integer ID to avoid conflict with hotel IDs
-                    doc = {
-                        'id': 1000000 + int(row['coupon_id']),  # Offset to avoid collision
-                        'text': row['semantic_text'],
-                        'coupon_id': int(row['coupon_id']),
-                        'coupon_name': str(row.get('coupon_name', '')),
-                        'coupon_code': str(row.get('coupon_code', '')),
-                        'coupon_price_sale': float(row.get('coupon_price_sale', 0)) if pd.notna(row.get('coupon_price_sale')) else 0,
-                        'document_type': 'coupon'
-                    }
-                    documents.append(doc)
-                
-                # Index using RAGService
-                success = rag_service_coupons.index_documents(
-                    documents=documents,
-                    id_field='id',
-                    text_field='text',
-                    metadata_fields=['coupon_id', 'coupon_name', 'coupon_code', 'coupon_price_sale', 'document_type'],
-                    recreate_collection=False
-                )
-                
-                if success:
-                    logger.info(f"  ✅ Indexed {len(documents)} coupons")
-                else:
-                    logger.warning("  ⚠️  Failed to index coupons")
-        except Exception as e:
-            logger.error(f"  ❌ Error indexing coupons: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+        coupons_result = indexing_service.index_rag_coupons(
+            collection_name=settings.RAG_COLLECTION_COUPONS,
+            batch_size=32
+        )
+        if not coupons_result.get('success'):
+            logger.warning(f"  ⚠️  Coupons indexing failed: {coupons_result.get('error')}")
+        else:
+            logger.info(f"  ✅ Indexed {coupons_result.get('indexed', 0)} coupon chunks")
         
-        logger.info("\n✅ RAG data indexed successfully!")
-        return True
+        # Check overall success
+        all_success = (
+            hotels_result.get('success', False) and
+            rooms_result.get('success', False) and
+            type_rooms_result.get('success', False) and
+            coupons_result.get('success', False)
+        )
+        
+        if all_success:
+            logger.info("\n✅ RAG data indexed successfully!")
+            return True
+        else:
+            logger.warning("\n⚠️  Some indexing failed, but continuing...")
+            return False
         
     except Exception as e:
         logger.error(f"❌ RAG indexing failed: {e}")

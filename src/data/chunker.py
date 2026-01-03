@@ -9,7 +9,7 @@ import re
 import logging
 import pandas as pd
 from typing import List, Dict, Optional
-
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 try:
     from langchain.schema import Document
 except ImportError:
@@ -20,97 +20,49 @@ logger = logging.getLogger(__name__)
 
 
 class SmartChunker:
-    """Smart chunking với metadata preservation"""
+    """
+    Wrapper cho RecursiveCharacterTextSplitter của LangChain
+    Tối ưu cho tiếng Việt
+    """
     
     def __init__(self,
-                 chunk_size: int = 800,  # Tăng chunk_size để giảm số lượng chunks
-                 chunk_overlap: int = 50,  # Giảm overlap
-                 min_chunk_size: int = 200,  # Tăng min_chunk_size
+                 chunk_size: int = 800,
+                 chunk_overlap: int = 50,
+                 min_chunk_size: int = 200, # (Có thể không dùng tới trong Recursive gốc nhưng giữ lại để tương thích)
                  preserve_sentences: bool = True):
-        """
-        Initialize smart chunker
         
-        Args:
-            chunk_size: Maximum size of each chunk (characters)
-            chunk_overlap: Overlap between chunks (characters)
-            min_chunk_size: Minimum size of chunk (characters)
-            preserve_sentences: If True, don't split in middle of sentences
-        """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.min_chunk_size = min_chunk_size
-        self.preserve_sentences = preserve_sentences
         
-        # Vietnamese sentence endings
-        self.sentence_endings = r'[.!?。！？]\s+'
+        # Định nghĩa các separators ưu tiên cho tiếng Việt
+        # 1. Đoạn văn (\n\n)
+        # 2. Xuống dòng (\n)
+        # 3. Kết thúc câu (., ;, ?, !)
+        # 4. Khoảng trắng
+        # 5. Cắt ký tự
+        separators = ["\n\n", "\n", ". ", "? ", "! ", "; ", " ", ""]
         
-        logger.info(f"SmartChunker initialized: chunk_size={chunk_size}, overlap={chunk_overlap}")
+        self.splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=separators,
+            keep_separator=True # Giữ lại dấu câu ở cuối chunk trước thay vì đẩy sang chunk sau
+        )
+        
+        logger.info(f"SmartChunker (Recursive) initialized: chunk_size={chunk_size}, overlap={chunk_overlap}")
     
     def split_text(self, text: str) -> List[str]:
         """
-        Split text into chunks with overlap
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of text chunks
+        Split text using RecursiveCharacterTextSplitter
         """
-        if not text or len(text) <= self.chunk_size:
-            return [text]
-        
-        chunks = []
-        
-        if self.preserve_sentences:
-            # Split by sentences first
-            sentences = re.split(self.sentence_endings, text)
-            sentences = [s.strip() for s in sentences if s.strip()]
+        if not text:
+            return []
             
-            current_chunk = ""
-            for sentence in sentences:
-                # If adding this sentence would exceed chunk_size
-                if len(current_chunk) + len(sentence) + 2 > self.chunk_size:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    
-                    # Start new chunk with overlap
-                    if chunks and self.chunk_overlap > 0:
-                        # Get last part of previous chunk for overlap
-                        prev_chunk = chunks[-1]
-                        overlap_text = prev_chunk[-self.chunk_overlap:]
-                        current_chunk = overlap_text + " " + sentence
-                    else:
-                        current_chunk = sentence
-                else:
-                    if current_chunk:
-                        current_chunk += ". " + sentence
-                    else:
-                        current_chunk = sentence
-            
-            # Add last chunk
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-        else:
-            # Simple character-based chunking
-            start = 0
-            while start < len(text):
-                end = start + self.chunk_size
-                
-                # Add overlap from previous chunk
-                if start > 0 and self.chunk_overlap > 0:
-                    overlap_start = max(0, start - self.chunk_overlap)
-                    chunk = text[overlap_start:end]
-                else:
-                    chunk = text[start:end]
-                
-                chunks.append(chunk.strip())
-                start = end - self.chunk_overlap
-        
-        # Filter out chunks that are too small
-        chunks = [chunk for chunk in chunks if len(chunk) >= self.min_chunk_size]
+        # LangChain trả về List[str] trực tiếp
+        chunks = self.splitter.split_text(text)
         
         return chunks
-    
+        
     def chunk_hotel_document(self, 
                              hotel_data: Dict,
                              semantic_text: str) -> List[Document]:

@@ -160,10 +160,42 @@ class IndexingService:
         logger.info("=" * 80)
         
         try:
-            # Fetch hotels from database
+            # Fetch hotels from database with area_name, votes (from tbl_evaluate), bookings (from tbl_order), avg_rating (from tbl_evaluate)
             logger.info("Fetching hotels from database...")
             engine = self._get_db_engine()
-            query = "SELECT * FROM tbl_hotel WHERE hotel_status = 1"
+            query = """
+                SELECT 
+                    h.*,
+                    a.area_name,
+                    COALESCE(evaluate_stats.vote_count, 0) as hotel_vote_count,
+                    COALESCE(evaluate_stats.avg_rating, 0) as hotel_avg_rating,
+                    COALESCE(order_stats.booking_count, 0) as hotel_booking_count
+                FROM tbl_hotel h
+                LEFT JOIN tbl_area a ON h.area_id = a.area_id
+                LEFT JOIN (
+                    SELECT 
+                        hotel_id,
+                        COUNT(*) as vote_count,
+                        AVG(
+                            (evaluate_loaction_point + evaluate_service_point + 
+                             evaluate_price_point + evaluate_sanitary_point + 
+                             evaluate_convenient_point) / 5.0
+                        ) as avg_rating
+                    FROM tbl_evaluate
+                    WHERE deleted_at IS NULL
+                    GROUP BY hotel_id
+                ) evaluate_stats ON h.hotel_id = evaluate_stats.hotel_id
+                LEFT JOIN (
+                    SELECT 
+                        od.hotel_id,
+                        COUNT(DISTINCT o.order_code) as booking_count
+                    FROM tbl_order o
+                    JOIN tbl_order_details od ON o.order_code = od.order_code
+                    WHERE o.deleted_at IS NULL
+                    GROUP BY od.hotel_id
+                ) order_stats ON h.hotel_id = order_stats.hotel_id
+                WHERE h.hotel_status = 1
+            """
             hotels_df = pd.read_sql(text(query), engine)
             
             logger.info(f"Fetched {len(hotels_df)} hotels")
@@ -171,6 +203,14 @@ class IndexingService:
             # Prepare hotel texts
             hotel_texts = []
             hotel_metadata = []
+            
+            # Import normalizer for semantic text creation
+            try:
+                from src.data.normalizer import HotelDataNormalizer
+                normalizer = HotelDataNormalizer()
+            except Exception as e:
+                logger.warning(f"Could not import normalizer: {e}")
+                normalizer = None
             
             for idx, hotel in hotels_df.iterrows():
                 hotel_id = hotel['hotel_id']
@@ -214,12 +254,40 @@ class IndexingService:
                     area_id = 0
                 area_id = int(area_id)
                 
+                # Get area_name from joined data (if available)
+                area_name = hotel.get('area_name', '')
+                if pd.isna(area_name) or area_name is None:
+                    area_name = ''
+                area_name = str(area_name).strip()
+                
+                # Get avg_rating từ tbl_evaluate (trung bình điểm đánh giá thực tế)
+                hotel_avg_rating = hotel.get('hotel_avg_rating', 0)
+                if pd.isna(hotel_avg_rating) or hotel_avg_rating is None:
+                    hotel_avg_rating = 0.0
+                hotel_avg_rating = float(hotel_avg_rating)
+                
+                # Get votes count from tbl_evaluate
+                hotel_vote_count = hotel.get('hotel_vote_count', 0)
+                if pd.isna(hotel_vote_count) or hotel_vote_count is None:
+                    hotel_vote_count = 0
+                hotel_vote_count = int(hotel_vote_count)
+                
+                # Get bookings count from tbl_order
+                hotel_booking_count = hotel.get('hotel_booking_count', 0)
+                if pd.isna(hotel_booking_count) or hotel_booking_count is None:
+                    hotel_booking_count = 0
+                hotel_booking_count = int(hotel_booking_count)
+                
                 hotel_metadata.append({
                     'hotel_id': int(hotel_id),
                     'hotel_name': hotel_name,
-                    'hotel_rank': hotel_rank,
-                    'hotel_price_average': hotel_price_average,
-                    'area_id': area_id
+                    'hotel_rank': hotel_rank,  # Số sao (giữ lại để tương thích)
+                    'hotel_avg_rating': hotel_avg_rating,  # Trung bình điểm đánh giá từ tbl_evaluate (dùng cho recommendation)
+                    'hotel_price_average': hotel_price_average,  # Lưu trong Payload (số)
+                    'area_id': area_id,  # Lưu trong Payload (số)
+                    'area_name': area_name,  # Lưu trong Payload (keyword/string)
+                    'hotel_vote': hotel_vote_count,  # Số lượng đánh giá từ tbl_evaluate
+                    'bookings': hotel_booking_count  # Số lượng đơn hàng từ tbl_order
                 })
             
             logger.info(f"Prepared {len(hotel_texts)} hotels for indexing")
@@ -376,10 +444,319 @@ class IndexingService:
             'db_counts': db_counts
         }
     
+    def index_rag_hotels(
+        self,
+        collection_name: Optional[str] = None,
+        batch_size: int = 32
+    ) -> Dict[str, Any]:
+        """
+        Index hotels for RAG system (chatbot) with smart chunking
+        
+        Args:
+            collection_name: Collection name (default: RAG_COLLECTION_HOTELS)
+            batch_size: Batch size for processing
+            
+        Returns:
+            Dict with indexing results
+        """
+        collection_name = collection_name or self.settings.RAG_COLLECTION_HOTELS
+        
+        logger.info("=" * 80)
+        logger.info("🔄 Indexing Hotels for RAG System (with Chunking)")
+        logger.info("=" * 80)
+        
+        try:
+            # Import data modules
+            try:
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
+                from src.data.chunker import SmartChunker
+            except ImportError:
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
+                from src.data.chunker import SmartChunker
+            
+            # Initialize services
+            db_connector = DatabaseConnector()
+            normalizer = HotelDataNormalizer()
+            chunker = SmartChunker(
+                chunk_size=800,
+                chunk_overlap=50,
+                preserve_sentences=True
+            )
+            
+            # Fetch hotels
+            logger.info("Fetching hotels from database...")
+            hotels_df = db_connector.get_hotels()
+            
+            if hotels_df.empty:
+                logger.warning("No hotels found in database")
+                return {
+                    'success': False,
+                    'error': 'No hotels found',
+                    'collection': collection_name
+                }
+            
+            logger.info(f"Fetched {len(hotels_df)} hotels")
+            
+            # Normalize hotels
+            logger.info("Normalizing hotels data...")
+            normalized_df = normalizer.normalize_hotels(hotels_df)
+            
+            # Chunk and prepare documents
+            logger.info("Chunking hotel documents...")
+            all_chunk_documents = []
+            for idx, row in normalized_df.iterrows():
+                hotel_id = int(row['hotel_id'])
+                
+                # Create hotel data dict for chunker
+                hotel_data = {
+                    'hotel_id': hotel_id,
+                    'hotel_name': str(row.get('hotel_name', '')),
+                    'hotel_rank': int(row.get('hotel_rank', 0)) if pd.notna(row.get('hotel_rank')) else None,
+                    'hotel_price_average': float(row.get('hotel_price_average', 0)) if pd.notna(row.get('hotel_price_average')) else None,
+                    'area_name': str(row.get('area_name', '')) if pd.notna(row.get('area_name')) else '',
+                    'brand_name': str(row.get('brand_name', '')) if pd.notna(row.get('brand_name')) else '',
+                    'price_category': normalizer._categorize_price(
+                        float(row.get('hotel_price_average', 0))
+                    ) if pd.notna(row.get('hotel_price_average')) else '',
+                    'normalized_name': normalizer.normalize_text(row.get('hotel_name', '')),
+                }
+                
+                # Get semantic text
+                semantic_text = row['semantic_text']
+                if not semantic_text or not str(semantic_text).strip():
+                    logger.warning(f"Hotel {hotel_id} has no semantic_text, skipping")
+                    continue
+                
+                # Chunk hotel document
+                chunk_docs = chunker.chunk_hotel_document(hotel_data, str(semantic_text))
+                
+                # Convert Document objects to dict format
+                for chunk_doc in chunk_docs:
+                    chunk_id = hotel_id * 1000000 + chunk_doc.metadata.get('chunk_index', 0)
+                    doc_dict = {
+                        'id': chunk_id,
+                        'text': chunk_doc.page_content,
+                        **chunk_doc.metadata
+                    }
+                    all_chunk_documents.append(doc_dict)
+            
+            logger.info(f"Created {len(all_chunk_documents)} chunks from {len(normalized_df)} hotels")
+            
+            # Index using direct indexing
+            if all_chunk_documents:
+                success = self._index_documents_direct(
+                    documents=all_chunk_documents,
+                    collection_name=collection_name,
+                    text_field='text',
+                    batch_size=batch_size
+                )
+                
+                if success:
+                    logger.info(f"✅ Indexed {len(all_chunk_documents)} hotel chunks successfully")
+                    return {
+                        'success': True,
+                        'collection': collection_name,
+                        'indexed': len(all_chunk_documents),
+                        'document_type': 'hotel'
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': 'Indexing failed',
+                        'collection': collection_name
+                    }
+            else:
+                return {
+                    'success': False,
+                    'error': 'No chunks created',
+                    'collection': collection_name
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Hotel indexing failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': str(e),
+                'collection': collection_name
+            }
+    
+    def index_rag_coupons(
+        self,
+        collection_name: Optional[str] = None,
+        batch_size: int = 32
+    ) -> Dict[str, Any]:
+        """
+        Index coupons for RAG system (chatbot) with smart chunking
+        
+        Args:
+            collection_name: Collection name (default: RAG_COLLECTION_COUPONS)
+            batch_size: Batch size for processing
+            
+        Returns:
+            Dict with indexing results
+        """
+        collection_name = collection_name or self.settings.RAG_COLLECTION_COUPONS
+        
+        logger.info("=" * 80)
+        logger.info("🔄 Indexing Coupons for RAG System (with Chunking)")
+        logger.info("=" * 80)
+        
+        try:
+            # Import data modules
+            try:
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
+                from src.data.coupon_normalizer import CouponDataNormalizer
+                from src.data.chunker import SmartChunker
+            except ImportError:
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+                from src.data.connector import DatabaseConnector
+                from src.data.normalizer import HotelDataNormalizer
+                from src.data.coupon_normalizer import CouponDataNormalizer
+                from src.data.chunker import SmartChunker
+            
+            # Initialize services
+            db_connector = DatabaseConnector()
+            normalizer = HotelDataNormalizer()
+            try:
+                coupon_normalizer = CouponDataNormalizer()
+            except:
+                coupon_normalizer = normalizer
+            
+            chunker = SmartChunker(
+                chunk_size=800,
+                chunk_overlap=50,
+                preserve_sentences=True
+            )
+            
+            # Fetch coupons
+            logger.info("Fetching coupons from database...")
+            coupons_df = db_connector.get_coupons(valid_only=True)
+            
+            if coupons_df.empty:
+                logger.warning("No coupons found in database")
+                return {
+                    'success': False,
+                    'error': 'No coupons found',
+                    'collection': collection_name
+                }
+            
+            logger.info(f"Fetched {len(coupons_df)} coupons")
+            
+            # Normalize coupons
+            logger.info("Normalizing coupons data...")
+            normalized_df = normalizer.normalize_coupons(coupons_df)
+            
+            # Chunk and prepare documents
+            logger.info("Chunking coupon documents...")
+            all_chunk_documents = []
+            for idx, row in normalized_df.iterrows():
+                coupon_id = int(row['coupon_id'])
+                
+                # Create coupon data dict for chunker
+                coupon_data = {
+                    'coupon_id': coupon_id,
+                    'coupon_name': str(row.get('coupon_name', '')),
+                    'coupon_name_code': str(row.get('coupon_name_code', '')),
+                    'coupon_desc': str(row.get('coupon_desc', '')),
+                    'coupon_price_sale': float(row.get('coupon_price_sale', 0)) if pd.notna(row.get('coupon_price_sale')) else None,
+                    'coupon_qty_code': int(row.get('coupon_qty_code', 0)) if pd.notna(row.get('coupon_qty_code')) else None,
+                    'coupon_start_date': str(row.get('coupon_start_date', '')) if pd.notna(row.get('coupon_start_date')) else None,
+                    'coupon_end_date': str(row.get('coupon_end_date', '')) if pd.notna(row.get('coupon_end_date')) else None,
+                    'is_valid': True,
+                    'normalized_name': normalizer.normalize_text(row.get('coupon_name', '')),
+                }
+                
+                # Extract extra metadata if methods exist
+                try:
+                    if hasattr(coupon_normalizer, '_extract_location'):
+                        coupon_data['location'] = coupon_normalizer._extract_location(row)
+                    if hasattr(coupon_normalizer, '_extract_target_audience'):
+                        coupon_data['target_audience'] = coupon_normalizer._extract_target_audience(row)
+                    if hasattr(coupon_normalizer, '_categorize_discount'):
+                        coupon_data['discount_category'] = coupon_normalizer._categorize_discount(
+                            float(row.get('coupon_price_sale', 0))
+                        ) if pd.notna(row.get('coupon_price_sale')) else ''
+                except Exception as e:
+                    logger.debug(f"Could not extract extra coupon metadata: {e}")
+                    coupon_data['location'] = ''
+                    coupon_data['target_audience'] = ''
+                    coupon_data['discount_category'] = ''
+                
+                # Get semantic text
+                semantic_text = row['semantic_text']
+                if not semantic_text or not str(semantic_text).strip():
+                    logger.warning(f"Coupon {coupon_id} has no semantic_text, skipping")
+                    continue
+                
+                # Chunk coupon document
+                chunk_docs = chunker.chunk_coupon_document(coupon_data, str(semantic_text))
+                
+                # Convert Document objects to dict format
+                for chunk_doc in chunk_docs:
+                    chunk_id = 1000000 + (coupon_id * 1000 + chunk_doc.metadata.get('chunk_index', 0))
+                    doc_dict = {
+                        'id': chunk_id,
+                        'text': chunk_doc.page_content,
+                        **chunk_doc.metadata
+                    }
+                    all_chunk_documents.append(doc_dict)
+            
+            logger.info(f"Created {len(all_chunk_documents)} chunks from {len(normalized_df)} coupons")
+            
+            # Index using direct indexing
+            if all_chunk_documents:
+                success = self._index_documents_direct(
+                    documents=all_chunk_documents,
+                    collection_name=collection_name,
+                    text_field='text',
+                    batch_size=batch_size
+                )
+                
+                if success:
+                    logger.info(f"✅ Indexed {len(all_chunk_documents)} coupon chunks successfully")
+                    return {
+                        'success': True,
+                        'collection': collection_name,
+                        'indexed': len(all_chunk_documents),
+                        'document_type': 'coupon'
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': 'Indexing failed',
+                        'collection': collection_name
+                    }
+            else:
+                return {
+                    'success': False,
+                    'error': 'No chunks created',
+                    'collection': collection_name
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Coupon indexing failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': str(e),
+                'collection': collection_name
+            }
+    
     def index_rag_rooms(
         self,
         collection_name: Optional[str] = None,
-        rag_service: Optional[Any] = None,  # RAGService instance
+        rag_service: Optional[Any] = None,  # RAGService instance (deprecated, kept for compatibility)
         batch_size: int = 50
     ) -> Dict[str, Any]:
         """
@@ -460,25 +837,14 @@ class IndexingService:
             
             logger.info(f"Prepared {len(documents)} room documents")
             
-            # Index using RAGService if provided, otherwise use direct indexing
-            if rag_service and hasattr(rag_service, 'index_documents'):
-                logger.info("Indexing using RAGService...")
-                success = rag_service.index_documents(
-                    documents=documents,
-                    id_field='id',
-                    text_field='text',
-                    metadata_fields=['document_type', 'hotel_id', 'hotel_name', 'room_id', 'type_room_id', 'price', 'type_name'],
-                    recreate_collection=False
-                )
-            else:
-                # Direct indexing using embedding and vectorstore services
-                logger.info("Indexing directly using embedding service...")
-                success = self._index_documents_direct(
-                    documents=documents,
-                    collection_name=collection_name,
-                    text_field='text',
-                    batch_size=batch_size
-                )
+            # Use direct indexing (rag_service parameter is deprecated but kept for compatibility)
+            logger.info("Indexing directly using embedding service...")
+            success = self._index_documents_direct(
+                documents=documents,
+                collection_name=collection_name,
+                text_field='text',
+                batch_size=batch_size
+            )
             
             if success:
                 logger.info(f"✅ Indexed {len(documents)} rooms successfully")
@@ -508,7 +874,7 @@ class IndexingService:
     def index_rag_type_rooms(
         self,
         collection_name: Optional[str] = None,
-        rag_service: Optional[Any] = None,  # RAGService instance
+        rag_service: Optional[Any] = None,  # RAGService instance (deprecated, kept for compatibility)
         batch_size: int = 50
     ) -> Dict[str, Any]:
         """
@@ -598,24 +964,14 @@ class IndexingService:
             
             logger.info(f"Prepared {len(documents)} type_room documents")
             
-            # Index
-            if rag_service and hasattr(rag_service, 'index_documents'):
-                logger.info("Indexing using RAGService...")
-                success = rag_service.index_documents(
-                    documents=documents,
-                    id_field='id',
-                    text_field='text',
-                    metadata_fields=['document_type', 'type_room_id', 'type_room_name', 'hotel_ids', 'hotel_names', 'min_price', 'max_price', 'avg_price', 'room_count'],
-                    recreate_collection=False
-                )
-            else:
-                logger.info("Indexing directly using embedding service...")
-                success = self._index_documents_direct(
-                    documents=documents,
-                    collection_name=collection_name,
-                    text_field='text',
-                    batch_size=batch_size
-                )
+            # Use direct indexing (rag_service parameter is deprecated but kept for compatibility)
+            logger.info("Indexing directly using embedding service...")
+            success = self._index_documents_direct(
+                documents=documents,
+                collection_name=collection_name,
+                text_field='text',
+                batch_size=batch_size
+            )
             
             if success:
                 logger.info(f"✅ Indexed {len(documents)} type_rooms successfully")

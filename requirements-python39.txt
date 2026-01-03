@@ -31,7 +31,6 @@ openai==1.6.1
 
 # ==================== Vector Database ====================
 # IMPORTANT: Use 1.11.3 for compatibility with modern Qdrant server
-# Version 1.7.0 is too old and causes Pydantic validation errors
 qdrant-client==1.11.3
 
 # ==================== Pydantic (Compatibility) ====================

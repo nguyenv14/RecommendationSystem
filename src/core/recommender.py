@@ -161,11 +161,14 @@ class RecommenderService:
             items_data = []
             for item in items:
                 payload = item.get("payload", {})
+                avg_rating = payload.get("hotel_avg_rating", 0)
+                votes = payload.get("hotel_vote", 0)
+                bookings = payload.get("bookings", 0)
                 items_data.append({
                     "item_id": item.get("id"),
-                    "rating": payload.get("hotel_rank", payload.get("rating", 0)),
-                    "votes": payload.get("hotel_vote", payload.get("reviews", 1)),
-                    "bookings": payload.get("bookings", 0),
+                    "rating": avg_rating if avg_rating > 0 else payload.get("hotel_rank", 0),
+                    "votes": votes if votes > 0 else 1,
+                    "bookings": bookings,
                     "payload": payload
                 })
             
@@ -205,7 +208,9 @@ class RecommenderService:
             # Simple popularity scoring
             def get_popularity_score(item):
                 payload = item.get("payload", {})
-                rating = payload.get("hotel_rank", payload.get("rating", 0))
+                rating = payload.get("hotel_avg_rating", 0)
+                if rating == 0:
+                    rating = payload.get("hotel_rank", 0)
                 reviews = payload.get("hotel_vote", payload.get("reviews", 0))
                 bookings = payload.get("bookings", 0)
                 score = (rating * 10) + (reviews * 0.1) + (bookings * 0.01)
@@ -396,34 +401,66 @@ class RecommenderService:
         
         logger.info(f"Recommending based on user preferences")
         
-        # Build query from preferences
+        # Build query from preferences (chỉ những thứ trừu tượng: mô tả, phong cách, tiện ích)
         query_parts = []
         
         if user_preferences:
-            if "preferred_location" in user_preferences:
-                query_parts.append(user_preferences["preferred_location"])
-            
-            if "preferred_price_range" in user_preferences:
-                price_range = user_preferences["preferred_price_range"]
-                query_parts.append(f"giá {price_range}")
-            
+            # Chỉ thêm amenities vào query (tiện ích)
             if "preferred_amenities" in user_preferences:
                 amenities = user_preferences["preferred_amenities"]
                 if isinstance(amenities, list):
                     query_parts.extend(amenities)
                 else:
                     query_parts.append(str(amenities))
+            
+            # Có thể thêm style/preferences khác (phong cách, mô tả)
+            if "preferred_style" in user_preferences:
+                query_parts.append(user_preferences["preferred_style"])
+            if "description_keywords" in user_preferences:
+                query_parts.append(user_preferences["description_keywords"])
         
-        # Build query
+        # Build query (chỉ chứa mô tả, phong cách, tiện ích)
         query = " ".join(query_parts) if query_parts else "khách sạn tốt"
         
-        # Build filters
+        # Build filters (sử dụng Qdrant filters cho giá và vị trí)
         filters = {}
-        if user_preferences and "min_rating" in user_preferences:
-            # Note: This would need proper filter implementation
-            pass
         
-        # Get recommendations
+        # Filter by location (area_name) - sử dụng keyword filter
+        if user_preferences and "preferred_location" in user_preferences:
+            location = user_preferences["preferred_location"]
+            # Qdrant filter: exact match hoặc keyword match
+            filters["area_name"] = location
+        
+        # Filter by price range - sử dụng range filter
+        if user_preferences:
+            if "min_price" in user_preferences:
+                min_price = float(user_preferences["min_price"])
+                if "hotel_price_average" not in filters:
+                    filters["hotel_price_average"] = {}
+                filters["hotel_price_average"]["gte"] = min_price
+            
+            if "max_price" in user_preferences:
+                max_price = float(user_preferences["max_price"])
+                if "hotel_price_average" not in filters:
+                    filters["hotel_price_average"] = {}
+                filters["hotel_price_average"]["lte"] = max_price
+            
+            # Support legacy preferred_price_range (convert to min/max)
+            if "preferred_price_range" in user_preferences and "min_price" not in user_preferences:
+                price_range = user_preferences["preferred_price_range"]
+                if price_range == "rẻ" or price_range == "thấp":
+                    filters["hotel_price_average"] = {"lte": 500000}
+                elif price_range == "trung bình":
+                    filters["hotel_price_average"] = {"gte": 500000, "lte": 1000000}
+                elif price_range == "cao" or price_range == "cao cấp":
+                    filters["hotel_price_average"] = {"gte": 1000000}
+        
+        # Filter by rating
+        if user_preferences and "min_rating" in user_preferences:
+            min_rating = float(user_preferences["min_rating"])
+            filters["hotel_rank"] = {"gte": min_rating}
+        
+        # Get recommendations with filters
         return self.recommend_by_query(
             query=query,
             collection_name=collection_name,
@@ -533,18 +570,22 @@ class RecommenderService:
                 query_parts.extend(amenities)
             else:
                 query_parts.append(str(amenities))
-        if 'area_name' in item_features:
-            query_parts.append(item_features['area_name'])
+        # NOTE: KHÔNG thêm area_name vào query (sẽ dùng filter)
         
-        # Build query
+        # Build query (chỉ chứa mô tả, phong cách, tiện ích)
         query = " ".join(query_parts) if query_parts else "khách sạn"
         
-        # Get semantic recommendations
+        # Build filters (nếu có location/price trong item_features)
+        filters = {}
+        if 'area_name' in item_features and item_features['area_name']:
+            filters['area_name'] = item_features['area_name']
+        
+        # Get semantic recommendations with filters
         similar_items = self.recommend_by_query(
             query=query,
             collection_name=collection_name,
             top_k=top_k * 2,  # Get more for filtering
-            filters=None
+            filters=filters if filters else None
         )
         
         # If not enough similar items, supplement with popular items
